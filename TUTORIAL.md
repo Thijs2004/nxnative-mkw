@@ -13,7 +13,7 @@ nxnative-mkw runs Mario Kart World version 1.8.0 (update v917504) on an iPhone o
 | **The game** | Your own dump of Mario Kart World: the base game **plus the 1.8.0 update (v917504)** |
 | **A Mac** | Apple silicon, Xcode 27 (tested with Xcode 27.0), and about 55 GB free for the iPhone app (22 GB dump, 23.5 GB `RomFS.img`, 6 GB shaders and build files), plus 23 GB if you also build the Mac app |
 | **An iPhone** | Tested on an iPhone 16 Pro Max, with about 30 GB free |
-| **A way to install apps** | A sideloading tool or developer account that can give the app the **Increased Memory Limit** and **Extended Virtual Addressing** entitlements |
+| **A way to install apps** | A paid developer account, or a free Apple account with SideStore (or LiveContainer) and [iRAM+](https://github.com/NexSideloading/iRAM-Plus) for the entitlements: see [Step 5](#step-5-install-the-app) |
 
 ## Step 1: Check your game version
 
@@ -141,9 +141,26 @@ The memory settings an 8 GB iPhone needs are built into the app ([`env_ios.txt`]
 
 ## Step 5: Install the app
 
-Install `MarioKartWorld.ipa` with your sideloading tool or developer account. The app needs the **Increased Memory Limit** and **Extended Virtual Addressing** entitlements ([`app.entitlements`](dm/games/0400C3F00006E000/app.entitlements) if your tool asks for a file): without them the game runs out of memory in a race.
+The app needs two entitlements: **Increased Memory Limit** and **Extended Virtual Addressing**. The game reserves about 13 GB of address space at start; without Extended Virtual Addressing an iPhone app gets far less, and the game closes at once. The IPA already asks for both ([`app.entitlements`](dm/games/0400C3F00006E000/app.entitlements)); your Apple account must allow them.
 
-The app also contains a small helper extension that lends it extra memory on phones where the system allows that. If your tool can't sign app extensions, the game still runs without it, with less headroom.
+Pick one route:
+
+**A. A paid Apple developer account** (Xcode, Sideloadly or any tool that signs with your team): enable both capabilities for the app's App ID and install the IPA.
+
+**B. A free Apple account with SideStore** (no paid account needed):
+
+1. Get SideStore on the iPhone. Without a computer, [SideInstaller](https://sideinstaller.net/) can install SideStore for you. Use it only for SideStore itself: the game must be signed with **your** Apple account, not with an enterprise certificate.
+2. Install `MarioKartWorld.ipa` with SideStore.
+3. Install [iRAM+](https://github.com/NexSideloading/iRAM-Plus), sign in with the same Apple account, select **Mario Kart World**, and add **Increased Memory Limit** and **Extended Virtual Addressing**.
+4. Reinstall `MarioKartWorld.ipa` through SideStore, so its new signature carries both entitlements.
+
+A free account's apps must be refreshed in SideStore every 7 days.
+
+**C. LiveContainer:** apply iRAM+ to **LiveContainer itself** (it runs the game inside its own process, so the entitlements must be LiveContainer's), then install the IPA in LiveContainer.
+
+The app also contains a small helper extension that lends it extra memory where the system allows it. With a free account or in LiveContainer it may be left out or not start: the game runs without it (a race uses about 3.5 GB of the about 6 GB an 8 GB iPhone gives an app with Increased Memory Limit).
+
+Routes B and C are untested so far; route A is how it was tested.
 
 Don't start the game yet.
 
@@ -152,7 +169,7 @@ Don't start the game yet.
 The game files go in the app's own **Documents** folder.
 
 1. Get `RomFS.img` onto the iPhone: a USB-C drive formatted as APFS or exFAT (FAT32 can't hold a file this big), AirDrop to the Files app, or Finder with the iPhone connected (select the iPhone, open the **Files** tab, and drag the file onto **Mario Kart World**).
-2. In the Files app, open **On My iPhone → Mario Kart World** and put `RomFS.img` there. If the file is already on the iPhone, use **Move** rather than **Copy**: a copy needs another 23.5 GB free.
+2. In the Files app, open **On My iPhone → Mario Kart World** and put `RomFS.img` there. In LiveContainer the folder is **On My iPhone → LiveContainer → Data → Application → (the game's folder) → Documents** instead; LiveContainer's settings for the app show which folder it is. If the file is already on the iPhone, use **Move** rather than **Copy**: a copy needs another 23.5 GB free.
 3. Wait for it to finish. Don't launch the game while the file is still arriving.
 4. Keep at least 5 GB free on top of that. While it runs, the game keeps part of its memory in a temporary file.
 
@@ -200,6 +217,7 @@ The iPhone app writes a log to `log.txt` in its Documents folder, and keeps the 
 | The game doesn't start | Check that `RomFS.img` is directly in the app's Documents folder and has finished copying, and that it came from the same build as the app |
 | `is not the image this build needs` in the log | The file doesn't match this app. Copy over the `RomFS.img` from the same build as your IPA |
 | The game closes during a race | Restart the phone, free up storage (Step 6), and use the Medium or Low preset. Check that the app has the Increased Memory Limit entitlement |
+| The game closes at once, `reserve guest AS` in the log | The app has no Extended Virtual Addressing: add it (Step 5) and reinstall |
 | Stutter that comes and goes | The phone is short of memory: restart it before playing, and let it cool down |
 | The build stops at the shaders | Read the message: with another Xcode than 27.0, add `--allow-other-metal` |
 | Wrong version or a crash at boot | Compare your build IDs with Step 1 |
