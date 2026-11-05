@@ -175,6 +175,11 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 DecodedFunction function = program.GetFunctionById(index);
 
+                if (ampere && index == 0)
+                {
+                    Instructions.InstEmit.AMeshPrologue(context);   // NVN2 mesh shaders as compute: groups past their task's count end (InstEmitAmpereMesh.cs)
+                }
+
                 foreach (Block block in function.Blocks)
                 {
                     context.CurrBlock = block;

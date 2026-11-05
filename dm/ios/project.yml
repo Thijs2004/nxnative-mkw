@@ -22,6 +22,8 @@ targets:
       - path: Gen/src         # Source files from the compile commands of dm/host/Makefile (linked in by tools/gen_build.py)
       - path: Gen/main/main.c
         compilerFlags: "-Dmain=dm_main"
+    dependencies:
+      - target: DmRamDonor   # the memory donor extension, embedded in PlugIns (Sources/ram_donor.m)
     postBuildScripts:
       - name: Copy game resources
         script: /bin/bash "${SRCROOT}/tools/stage_resources.sh"
@@ -82,6 +84,39 @@ targets:
       SWIFT_OBJC_BRIDGING_HEADER: Sources/DmIOS-Bridging-Header.h   # CloudSaves.h (the cloud-save folder pick)
       DEBUG_INFORMATION_FORMAT: dwarf
       GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+  DmRamDonor:   # memory donor extension: a process with its own memory limit whose memory the app maps as the guest heap (Sources/ram_donor.m, RamDonor/main.m)
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: RamDonor
+    info:
+      path: Gen/RamDonor-Info.plist
+      properties:
+        CFBundleDisplayName: Memory
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ar.viewer   # an extension point any app may host; the activation rule never matches, so nothing else starts it
+          NSExtensionPrincipalClass: DmRamDonorHandler
+          NSExtensionContextClass: NSExtensionContext
+          NSExtensionContextHostClass: NSExtensionContext
+          NSExtensionAttributes:
+            NSExtensionActivationRule: FALSEPREDICATE
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: ${DM_BUNDLE_ID}.RamDonor
+      PRODUCT_NAME: DmRamDonor
+      MARKETING_VERSION: ${DM_APP_VERSION}
+      CURRENT_PROJECT_VERSION: ${DM_APP_VERSION}
+      DEVELOPMENT_TEAM: ${DM_TEAM_ID}
+      CODE_SIGN_STYLE: Automatic
+      CLANG_ENABLE_MODULES: YES
+      CLANG_ENABLE_OBJC_ARC: YES
+      SKIP_INSTALL: YES
+      TARGETED_DEVICE_FAMILY: "1,2"
+      SYMROOT: $(DM_XCODE_OUTPUT_ROOT)/Build/Products
+      OBJROOT: $(DM_XCODE_OUTPUT_ROOT)/Build/Intermediates.noindex
+      CONFIGURATION_BUILD_DIR: $(DM_XCODE_OUTPUT_ROOT)/Build/Products/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
+      CONFIGURATION_TEMP_DIR: $(DM_XCODE_OUTPUT_ROOT)/Build/Intermediates.noindex/$(PROJECT_NAME).build/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
 schemes:
   ${DM_SCHEME_NAME}:
     build:

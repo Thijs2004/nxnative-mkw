@@ -209,9 +209,11 @@ static void cv_open(cv_dec *d) {   // (re)creates the codec state: a new stream 
     }
     if (d->codec == CV_H264) { if (!d->avc) d->avc = mavc_new(); else mavc_drop(d->avc); if (d->csd_n) mavc_param_sets(d->avc, d->csd, d->csd_n); d->vpx_ok = 1; return; }
     if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
-    vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = d->w, .h = d->h};
+    // 4 threads (was 2): Mario Kart World's pre-race movie is 2560x1440 VP9, decoded on the host's CPU next to the game; with 2 an iPhone fell behind (stutter, sound cut-outs)
+    vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = d->w, .h = d->h};
     d->vpx_ok = vpx_codec_dec_init(&d->vpx, d->codec == CV_VP8 ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
     if (!d->vpx_ok) LOG("[RED] nn::codec %s decoder: libvpx init failed", k_cv_name[d->codec]);
+    else if (d->codec != CV_VP8) vpx_codec_control(&d->vpx, VP9D_SET_ROW_MT, 1);   // row-based multithreading: the 4 threads also share one tile column
 }
 static Result cv_dec_init(void *t, int codec, uint16_t w, uint16_t h, uint32_t in, uint32_t out, const void *csd, uint64_t csd_n) {
     cv_dec *d = calloc(1, sizeof *d);
@@ -316,9 +318,17 @@ static Result cv_dec_submit(uint64_t *out, void *t, const void *data, uint64_t s
             if (mav1_decode(d->av1, data, (size_t)size, &pic) == 1) { vpx_image_t *c = av1_to_i420(&pic); if (c) got += cv_hold(d, c, ts); }
         }
     } else if (size && d->vpx_ok) {
-        if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: %s (%s)", k_cv_name[d->codec], vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : ""); }
+        // Decode time per picture, every 120 pictures (mean / max and the calling thread): the movie's sound is fed by the same game thread (Mario Kart World's pre-race movie: a 10 ms gap
+        // every 0.74 s, one 32768-sample block at 44.1 kHz, while the picture stayed smooth)
+        struct timespec dt0; clock_gettime(CLOCK_MONOTONIC, &dt0);
+        int dec_ok = vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) == VPX_CODEC_OK;
+        { struct timespec dt1; clock_gettime(CLOCK_MONOTONIC, &dt1); double ms = (dt1.tv_sec - dt0.tv_sec) * 1e3 + (dt1.tv_nsec - dt0.tv_nsec) / 1e6;
+          static double sum, mx; static unsigned cnt; sum += ms; if (ms > mx) mx = ms;
+          if (++cnt == 120) { char tn[64] = ""; pthread_getname_np(pthread_self(), tn, sizeof tn); LOG("[codec] %s decoder %dx%d: decode mean %.1f ms / max %.1f ms per picture (last 120, thread '%s')", k_cv_name[d->codec], d->w, d->h, sum / cnt, mx, tn); sum = mx = 0; cnt = 0; } }
+        if (!dec_ok) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: %s (%s)", k_cv_name[d->codec], vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : ""); }
         vpx_codec_iter_t it = NULL; const vpx_image_t *im;
         while ((im = vpx_codec_get_frame(&d->vpx, &it))) { vpx_image_t *c = img_copy(im); if (c) got += cv_hold(d, c, ts); }
+        if (got) { void dm_fps_movie_tick(void); dm_fps_movie_tick(); }   // a movie plays: no present interval lock (loader.c)
     }
     if (eos) { if (got) d->held_eos[d->nheld - 1] = 1; else d->eos_pending = 1; }
     *out = ++d->submits;

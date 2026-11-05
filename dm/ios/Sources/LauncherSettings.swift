@@ -56,6 +56,7 @@ final class LauncherModel: ObservableObject {
             let saved = ignoreSaved ? nil : defaults.object(forKey: "launcher." + s.env) as? String   // a string, as launcher.c reads it: not string(forKey:), which turns a number into one
             values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? s.def   // a saved choice the game no longer offers: its default
         }
+        if let p = values["DM_PRESET"], p != "custom" { applyPreset(p) }   // a chosen preset sets its rows at every start (a row changed by hand made it Custom)
     }
 
     var sections: [String] {
@@ -84,12 +85,30 @@ final class LauncherModel: ObservableObject {
         guard size.count == 2 else { return p }
         return "\(Int((Double(size[0]) * v).rounded())) × \(Int((Double(size[1]) * v).rounded())) (\(p))"
     }
+// Graphics presets (the iOS launcher's DM_PRESET row, Mario Kart World on an 8 GB iPhone): each sets texture quality, render scale, frame rate, upscaling and the
+    // performance switches together; changing one of those rows by hand makes the preset Custom. Medium (Locked 30) held 30 fps with 0-2 dropped frames a 300 in a hot phone
+    static let presets: [String: [(String, String)]] = {
+        let perf = [("DM_NVN_TEX_DROP", "1"), ("DM_NVN_ENC_THREAD", "1"), ("DM_NVN_TBDR", "1"), ("DM_PRESENT_SNAP", "0"), ("DM_PSO_MTL4", "0")]
+        return ["full": [("DM_NVN_TEX_FLOOR", "0"), ("DM_RENDER_SCALE", "1.00"), ("DM_FPS_LOCK", "60"), ("DM_PRESENT_UPSCALE", "metalfx")] + perf,
+                "high": [("DM_NVN_TEX_FLOOR", "1024"), ("DM_RENDER_SCALE", "0.80"), ("DM_FPS_LOCK", "0"), ("DM_PRESENT_UPSCALE", "off")] + perf,
+                "medium": [("DM_NVN_TEX_FLOOR", "512"), ("DM_RENDER_SCALE", "0.65"), ("DM_FPS_LOCK", "30"), ("DM_PRESENT_UPSCALE", "off")] + perf,
+                "low": [("DM_NVN_TEX_FLOOR", "256"), ("DM_RENDER_SCALE", "0.50"), ("DM_FPS_LOCK", "30"), ("DM_PRESENT_UPSCALE", "off")] + perf]
+    }()
+    func applyPreset(_ p: String) {
+        for (k, v) in Self.presets[p] ?? [] where !fixed.contains(k) { if let s = settings.first(where: { $0.env == k }), s.accepts(v) { values[k] = v } }
+    }
+    // A preset row changed by hand: the preset becomes Custom (the other rows keep what the preset set)
+    func userChanged(_ env: String) {
+        guard env != "DM_PRESET", values["DM_PRESET"] != nil, values["DM_PRESET"] != "custom", Self.presets.values.contains(where: { $0.contains { $0.0 == env } }) else { return }
+        values["DM_PRESET"] = "custom"
+    }
     var changed: Bool { settings.contains { !fixed.contains($0.env) && !$0.isDefault(values[$0.env] ?? $0.def) } }
 
     // Reset every launcher choice to the game's defaults on the screen; values fixed by an env file or at launch stay. The saved choices are forgotten when Play applies
     // the defaults (apply() keeps no default), so Quit after Reset keeps them, and a choice a launch override hides is kept
     func reset() {
         for s in settings where !fixed.contains(s.env) { values[s.env] = s.def }
+        if let p = values["DM_PRESET"], p != "custom" { applyPreset(p) }
         fputs("launcher: settings reset to the game's defaults\n", stderr)
     }
 

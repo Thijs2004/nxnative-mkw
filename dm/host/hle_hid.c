@@ -901,3 +901,9 @@ PALMA_FAIL("_ZN2nn3hid37SetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConne
 PALMA_FAIL("_ZN2nn3hid19SuspendPalmaFeatureERKNS0_21PalmaConnectionHandleERKNS_4util10BitFlagSetILi32ENS0_12PalmaFeatureEEE", "feature suspension", h_hid_PalmaSuspend, const void *h, const void *f)
 PALMA_FAIL("_ZN2nn3hid16ReadPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log read", h_hid_PalmaLogRead, const void *h, const uint16_t *i)
 PALMA_FAIL("_ZN2nn3hid17ResetPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log reset", h_hid_PalmaLogReset, const void *h, const uint16_t *i)
+
+// ---------- Switch 2 Joy-Con 2 mouse (SDK 21 Ounce builds, Mario Kart World) ----------
+// The host has no such devices: initialization succeeds, there are no handles and no states, so the game keeps to buttons and sticks
+HLE_FORCE("_ZN2nn3hid19EnableNmousePointerENS0_12NmouseHandleEb", "Joy-Con 2 mouse: none on the host", void, h_hid_NmouseEnable, uint64_t h, int on) { (void)h; (void)on; }
+HLE_FORCE("_ZN2nn3hid22SetNmousePointerRangesEii", "Joy-Con 2 mouse: none on the host", void, h_hid_NmouseRanges, int a, int b) { (void)a; (void)b; }
+HLE_FORCE("_ZN2nn3hid24SetNmousePointerPositionENS0_12NmouseHandleEii", "Joy-Con 2 mouse: none on the host", void, h_hid_NmousePos, uint64_t h, int x, int y) { (void)h; (void)x; (void)y; }

@@ -327,7 +327,9 @@ NVN(nvnTextureBuilderSetDefaults, void, NVNtextureBuilder *b) {
     TB(b)->d.target = NVN_TEXTURE_TARGET_2D; TB(b)->d.width = TB(b)->d.height = TB(b)->d.depth = TB(b)->d.levels = 1;
 }
 NVN(nvnTextureBuilderSetDevice, void, NVNtextureBuilder *b, NVNdevice *d) { TB(b)->dev = d; }
-NVN(nvnTextureBuilderSetFlags, void, NVNtextureBuilder *b, int f) { TB(b)->d.flags = f; }
+static int wintex_1080(void); static inline __attribute__((always_inline)) void trace_size(int w, int h);
+NVN(nvnTextureBuilderSetFlags, void, NVNtextureBuilder *b, int f) { TB(b)->d.flags = f;
+    if ((f & NVN_TEXTURE_FLAGS_DISPLAY) && TB(b)->d.width == 3840 && TB(b)->d.height == 2160 && wintex_1080()) { TB(b)->d.width = 1920; TB(b)->d.height = 1080; } }   // the size was set first (nvnTextureBuilderSetSize2D)
 NVN(nvnTextureBuilderSetTarget, void, NVNtextureBuilder *b, NVNtextureTarget t) { TB(b)->d.target = t; }
 NVN(nvnTextureBuilderSetWidth, void, NVNtextureBuilder *b, int v) { TB(b)->d.width = v; }
 NVN(nvnTextureBuilderSetHeight, void, NVNtextureBuilder *b, int v) { TB(b)->d.height = v; }
@@ -500,6 +502,18 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     if (o->magic == MAGIC('T', 'E', 'X', 0) && o->serial) { static uint64_t n; if (!n++) LOG("[nvn] TextureInitialize on a texture object that is still live (no Finalize): releasing the old host texture (first case ser=%llu)", (unsigned long long)o->serial); mtl_tex_release(o); }
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('T', 'E', 'X', 0); o->d = s->d; o->pool = s->pool; o->off = s->off;
+    {   // DM_TRACE_TEXINIT=1: each distinct large size (640x360 and up) with flags / format once, with the caller (where the game sizes its render targets)
+        static int on = -1; if (on < 0) { const char *e = getenv("DM_TRACE_TEXINIT"); on = e && atoi(e); }
+        if (on && o->d.width >= 640 && o->d.height >= 360) { static uint64_t seen[512]; static int ns; uint64_t ra = (uint64_t)__builtin_return_address(0);
+            uint64_t k = ((uint64_t)o->d.width << 40) ^ ((uint64_t)o->d.height << 20) ^ ((uint64_t)o->d.format << 8) ^ o->d.flags ^ (ra << 3); int dup = 0;
+            for (int i = 0; i < ns; i++) dup |= seen[i] == k;
+            if (!dup && ns < 512) { seen[ns++] = k; module_t *m = module_of((void *)ra);
+                uint64_t *fp = (uint64_t *)__builtin_frame_address(0); char st[200]; int so = 0;   // frame records up the stack: the game's callers past the gate stub
+                for (int dd = 0; dd < 8 && fp && !((uintptr_t)fp & 7) && so < 180; dd++) { uint64_t r = fp[1] & 0x0000ffffffffffffull; module_t *mm = module_of((void *)r);
+                    if (mm) so += snprintf(st + so, sizeof st - so, " %s+%#llx", mm->name, (unsigned long long)(r - (uint64_t)mm->base)); fp = (uint64_t *)fp[0]; }
+                LOG("[trace] texture init %ux%ux%u format %#x flags %#x target %d levels %u from %s+%#llx (ra %#llx) stack%s", o->d.width, o->d.height, o->d.depth, o->d.format, o->d.flags, o->d.target, o->d.levels,
+                    m ? m->name : "?", m ? (unsigned long long)(ra - (uint64_t)m->base) : 0ULL, (unsigned long long)ra, so ? st : " ?"); } }
+    }
     o->has_layout = s->has_layout; memcpy(o->layout, s->layout, 8); o->set_swz = s->set_swz; o->stencil = s->stencil; o->swz = s->swz;
     nvn_tex_layout(&o->d, &o->L);
     o->mem = s->pool && s->pool->mem ? s->pool->mem + s->off : NULL;
@@ -636,7 +650,7 @@ NVN(nvnProgramFinalize, void, NVNprogram *p) {
     mtl_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; pk_drop(p);
 }
 // a program's per-stage keys (side table: guest NVNprogram address → host object; bit i of ok = stage i computed)
-typedef struct { uint8_t key[6][8]; uint8_t ok; } prog_keys_t;
+typedef struct { uint8_t key[6][8]; uint8_t ok; uint8_t nvn2_stage[6]; uint16_t mesh_maxp[6]; } prog_keys_t;   // nvn2_stage / mesh_maxp: an NVN2 stage's control +0x56 (6 task, 7 mesh) and +0x62 (max primitives), read at SetShaders (prog_mesh)
 static pthread_mutex_t g_pk_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableDictionaryRef g_pk;   // a dedicated table (keys not shared with other side tables)
 static prog_keys_t *pk_get(const void *p, int make) {
     pthread_mutex_lock(&g_pk_mu);
@@ -686,6 +700,13 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
     CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
     return 1;
 }
+// NVN2 task (6) / mesh (7) stage of a program, 0 for other stages; *maxp: the mesh stage's maximum primitive count (nvn_mtl.m mesh_draw)
+int prog_mesh(const prog_t *p, unsigned st, int *maxp) {
+    prog_keys_t *k = st < p->nstage ? pk_get(p, 0) : NULL;
+    if (!k) return 0;
+    if (maxp) *maxp = k->mesh_maxp[st];
+    return k->nvn2_stage[st];
+}
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     if (st >= p->nstage) return 0;
     prog_keys_t *k = pk_get(p, 1);
@@ -705,6 +726,11 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     k->ok = 0;
     for (int i = 0; i < n; i++) {
         if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
+        k->nvn2_stage[i] = 0; k->mesh_maxp[i] = 0;
+        if (sd[i].control && nvn2_ctl(sd[i].control)) {
+            const uint8_t *c = sd[i].control;
+            if (c[0x56] == 6 || c[0x56] == 7) { k->nvn2_stage[i] = c[0x56]; memcpy(&k->mesh_maxp[i], c + 0x62, 2); }
+        }
         // Diagnostic: trace the loader of selected shader keys (comma-separated hex).
         if (trace && (k->ok & (1u << i))) {
             char key[17]; for (int j = 0; j < 8; j++) snprintf(key + j * 2, 3, "%02x", k->key[i][j]);
@@ -1027,8 +1053,10 @@ NVN(nvnCommandBufferClearColorui, void, NVNcommandBuffer *c, int index, const ui
 NVN(nvnCommandBufferClearDepthStencil, void, NVNcommandBuffer *c, float depth, uint32_t dmask, int stencil, int smask) {
     p_clear_ds *r = REC(c, OP_CLEAR_DS, p_clear_ds); *r = (p_clear_ds){depth, (int)B(dmask), stencil, smask};
 }
+static void vp_trace(void *ra, float x, float y, float w, float h);
 NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, const float *v) {
     if (n < 0 || first + n > 16) { LOG("[RED] SetViewports first=%d n=%d", first, n); return; }
+    if (n > 0) vp_trace(__builtin_return_address(0), v[0], v[1], v[2], v[3]);
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
 }
@@ -1373,7 +1401,8 @@ NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) {
 }
 NVN(nvnWindowSetCrop, void, NVNwindow *w, int x, int y, int ww, int hh) {
     win_t *o = (win_t *)w; int v[4] = {x, y, ww, hh};
-    if (memcmp(o->crop, v, sizeof v)) LOG("[nvn] WindowCrop %d,%d %dx%d", x, y, ww, hh);
+    if (memcmp(o->crop, v, sizeof v)) { module_t *m = module_of(__builtin_return_address(0));   // the caller: where the game decides its output size (a render-scale patch)
+        LOG("[nvn] WindowCrop %d,%d %dx%d (from %s+%#llx)", x, y, ww, hh, m ? m->name : "?", m ? (unsigned long long)((uint64_t)__builtin_return_address(0) - (uint64_t)m->base) : 0ULL); }
     memcpy(o->crop, v, sizeof v);
 }
 NVN(nvnWindowGetCrop, void, const NVNwindow *w, NVNrectangle *r) {   // Bayonetta 3 reads it back every few frames; before any SetCrop it is the whole first texture, as NVN starts it
@@ -1494,7 +1523,7 @@ __attribute__((weak)) int dm_thermal_now(void) { return -1; }   // Default (Mac)
 __attribute__((weak)) int dm_low_power_now(void) { return 0; }   // Low Power Mode (iOS front_ios.m); off on the Mac
 // Per-frame ring for the long-frame log (GPU time only arrives 8 frames late, so store first and judge later)
 #define LFN 16
-typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms; unsigned pso, lib, up, rup, hy; } lf_rec;   // hy: draws with a hybrid (pulling) pipeline
+typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms; unsigned pso, lib, up, rup, hy, flt, pin; } lf_rec;   // hy: draws with a hybrid (pulling) pipeline; flt / pin: the process's page faults / page-ins in the frame
 static lf_rec g_lf[LFN];
 __attribute__((weak)) void dm_longframe_note(const char *what) { LOG("[longframe] %s", what); }   // Default (graphics unit tests); the strong definition in the host's diag.c adds scene context and writes perf.txt
 extern void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns); extern void mtl_hybrid_stats(uint64_t *draws, uint64_t *made, uint64_t *none); extern uint64_t mtl_upload_bytes(void); extern void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
@@ -1529,6 +1558,10 @@ static void power_line(uint64_t frame) {
         double nf = frame > pf ? (double)(frame - pf) : 1;   // per frame: the fair comparison when one build holds the frame rate better than another
         LOG("[nvn] power up to frame %llu: CPU energy %.2f W, %.1f mJ per frame (%.1f fps); CPU %.0f%% (100 = one core), %.0f%% of it on performance cores; wakeups %.0f/s (out of platform idle %.0f); GPU %.1f ms/s; thermal %d; top yielders: %s", frame,
             (e - pe) / 1e9 / s, (e - pe) / 1e6 / nf, nf / s, (cpu - pcpu) / 1e7 / s, cpu > pcpu ? 100.0 * (double)(p - pp) / (double)(cpu - pcpu) : 0, (iw - piw) / s, (idw - ppw) / s, (g - pg) / 1e6 / s, dm_thermal_now(), yt);
+        { static uint64_t pfl, ppi, pcow; task_events_info_data_t ev; mach_msg_type_number_t en = TASK_EVENTS_INFO_COUNT;   // page faults / page-ins since the last line: a game thread stalled by the compressor or the swap file shows here
+          if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t)&ev, &en) == KERN_SUCCESS) {
+              LOG("[nvn] memory events up to frame %llu: %.0f page faults/s (%.0f copy-on-write), %.1f page-ins/s", frame, (ev.faults - pfl) / s, (ev.cow_faults - pcow) / s, (ev.pageins - ppi) / s);
+              pfl = ev.faults; ppi = ev.pageins; pcow = ev.cow_faults; } }
         char rs[400]; mtl_res_stats(rs, sizeof rs); static uint64_t pbs, pbf; uint64_t bs, bf; mtl_barrier_stats(&bs, &bf);
         uint64_t mtl_cut_count(void), mtl_copy_cut_count(void), mtl_blit_splits(void); void mtl_ubd_stats(uint64_t *, uint64_t *); static uint64_t pcut, pccut, pbsp, pud, puc; uint64_t cut = mtl_cut_count(), ccut = mtl_copy_cut_count(), bsp = mtl_blit_splits(), ud, uc; mtl_ubd_stats(&ud, &uc);
         void mtl_ubp_stats(uint64_t *, uint64_t *, uint64_t *); static uint64_t ppm, ppr, ppf; uint64_t pm, pr, pf_; mtl_ubp_stats(&pm, &pr, &pf_);
@@ -1991,6 +2024,10 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
             lf_rec *r = &g_lf[f % LFN]; r->f = f; r->fr = fr; r->nv = nv; r->t_s = (now_ns() - g_t0_ns) / 1e9; r->pso = (unsigned)(pso_ - ppso); r->lib = (unsigned)(lib_ - plib);
             r->make_ms = ((lns - plns) + (pns - ppns)) / 1e6; r->up = (unsigned)(up - pup); r->rup = (unsigned)(rup - prup); r->up_mb = (ub - pub) / 1048576.0; r->up_ms = up_ms;
             r->hy = (unsigned)(hy - phy); plns = lns; ppns = pns; pup = up; prup = rup; pub = ub; phy = hy;
+            // page faults and page-ins of the frame: a frame long with neither the submit nor the GPU long is a game thread that waited, and paging (the compressor, the guest memory
+            // file, the game files) is one such wait. task_info is a few microseconds
+            { static uint64_t pfl, ppi; task_events_info_data_t ev; mach_msg_type_number_t en = TASK_EVENTS_INFO_COUNT;
+              if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t)&ev, &en) == KERN_SUCCESS) { r->flt = (unsigned)(ev.faults - pfl); r->pin = (unsigned)(ev.pageins - ppi); pfl = ev.faults; ppi = ev.pageins; } }
         }
         plib = lib_; ppso = pso_;
         trow(f, "@t_s", (now_ns() - g_t0_ns) / 1e9);
@@ -2006,8 +2043,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           static double ef = 16.7, eg = 8; int lf = r->fr > 20.0 && r->fr > 1.4 * ef, lg = g > 16.7 && g > 1.3 * eg;
           if (r->f == f - 8) { ef += ((r->fr < 3 * ef ? r->fr : 3 * ef) - ef) / 16; eg += ((g < 3 * eg ? g : 3 * eg) - eg) / 16; }
           if (on && r->f == f - 8 && f - 8 > 0 && (lf || lg)) { char b[512];
-              snprintf(b, sizeof b, "frame %llu (%.2f s) whole frame %.1f ms, submit+present %.1f ms, GPU %.1f ms; new pipelines %u + shader libraries %u, %.1f ms in all; texture uploads %u first + %u re-uploads, %.1f MB / %.1f ms; draws with a hybrid pipeline %u",
-                       (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms, r->hy);
+              snprintf(b, sizeof b, "frame %llu (%.2f s) whole frame %.1f ms, submit+present %.1f ms, GPU %.1f ms; new pipelines %u + shader libraries %u, %.1f ms in all; texture uploads %u first + %u re-uploads, %.1f MB / %.1f ms; draws with a hybrid pipeline %u; page faults %u, page-ins %u",
+                       (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms, r->hy, r->flt, r->pin);
               // Visibility: during the time a long frame "comes out late", what stays on screen is the previous frame; if the previous frame was a loading screen (or this frame itself is one), all the player sees is the loading screen staying a bit longer, with no motion interrupted
               dm_longframe_note(b); } }
         uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
@@ -2015,6 +2052,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     dump_frame();
     if (g_frame % TWIN == 0) tsummary(g_frame);
     mtl_set_frame(g_frame);
+    { void dm_fps_movie_check(void); dm_fps_movie_check(); }   // the present interval lock back after a movie (loader.c)
     // Real-device semantics: present only enqueues and returns immediately; this frame's display time is scheduled by the pacer, and the texture can be acquired again only at "display time + one period" (blocking in AcquireTexture)
     uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
     g_hold_ring[o->presents % 16] = (uint8_t)present_itv(o);
@@ -2206,9 +2244,23 @@ static int vpool_map(struct vpool *v, const map_req *r) {   // caller holds g_vp
     if (end > v->top) v->top = end;
     return 1;
 }
+// Physical pools some virtual pool maps (nvn_phys_mapped): their pages are also read through the virtual pool's page table (sparse tiles), so their storage is never dropped
+// (nvn_mtl.m tex_drop: dropping a texture's left-out levels in one gave magenta characters and buildings on the Mac). Under g_vp_mu
+static struct { uintptr_t lo, hi; const void *pool; } *g_vsrc; static int g_nvsrc, g_cvsrc;
+static void vsrc_add(const pool_t *ph) {
+    for (int i = 0; i < g_nvsrc; i++) if (g_vsrc[i].pool == ph) return;
+    if (g_nvsrc == g_cvsrc && !(g_vsrc = realloc(g_vsrc, (g_cvsrc = g_cvsrc ? 2 * g_cvsrc : 64) * sizeof *g_vsrc))) die("mapped physical pool table allocation failed");
+    g_vsrc[g_nvsrc].lo = (uintptr_t)ph->mem; g_vsrc[g_nvsrc].hi = (uintptr_t)ph->mem + ph->size; g_vsrc[g_nvsrc++].pool = ph;
+}
+int nvn_phys_mapped(const void *lo, const void *hi) {
+    int r = 0; pthread_mutex_lock(&g_vp_mu);
+    for (int i = 0; i < g_nvsrc && !r; i++) r = (uintptr_t)lo < g_vsrc[i].hi && (uintptr_t)hi > g_vsrc[i].lo;
+    pthread_mutex_unlock(&g_vp_mu); return r;
+}
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *rq) {
     pool_t *o = (pool_t *)p; const map_req *r = (const map_req *)rq;
     pthread_mutex_lock(&g_vp_mu);
+    for (int i = 0; i < n; i++) if (r[i].phys && ((const pool_t *)r[i].phys)->mem) vsrc_add((const pool_t *)r[i].phys);
     if (o->vp && o->vmode == 0 && n > 0) {   // the first mapping decides (see the sparse pools above)
         if (r[0].phys && r[0].voff == 0 && r[0].size == o->size) { vpool_drop(o); o->mem = NULL; o->vmode = 1; }
         else o->vmode = 2;
@@ -2250,7 +2302,29 @@ NVN(nvnSamplerCompare, NVNboolean, const NVNsampler *a, const NVNsampler *b) {
 }
 
 // Texture builder / texture / view
-NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
+// DM_TRACE_SIZE=WxH[,WxH..]: the callers that set a texture size of those (where the game decides its render size: a resolution patch), each caller and size once, the guest stack's return addresses
+NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) {
+    // DM_WINTEX_1080=1 (iPhone default): a 3840x2160 window texture (the size a game makes for docked output) is made 1920x1080. In handheld mode the game draws 1920x1080 into it
+    // (viewport and window crop) and the rest is never shown, but the last pass of every frame loaded and stored the whole 4K texture: Mario Kart World on an iPhone, 64 MB of memory
+    // traffic a frame and 3 x 24 MB more of GPU memory. Only textures the game marks as display textures (NVN_TEXTURE_FLAGS_DISPLAY) are clamped
+    if (w == 3840 && h == 2160 && (TB(b)->d.flags & NVN_TEXTURE_FLAGS_DISPLAY) && wintex_1080()) { w = 1920; h = 1080; }
+    TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1;
+    trace_size(w, h);
+}
+static int wintex_1080(void) {
+    static int wt = -1; if (wt < 0) { const char *e = getenv("DM_WINTEX_1080"); wt = e ? atoi(e) > 0 : TARGET_OS_IPHONE; if (wt) LOG("[nvn] window textures: 3840x2160 display textures are made 1920x1080 (DM_WINTEX_1080=0 keeps them)"); }
+    return wt;
+}
+static inline __attribute__((always_inline)) void trace_size(int w, int h) {
+    static int on = -1, all; static int want[8][2], nw; if (on < 0) { const char *e = getenv("DM_TRACE_SIZE"); on = 0; all = e && !strcmp(e, "all"); on = all; while (!all && e && *e && nw < 8 && sscanf(e, "%dx%d", &want[nw][0], &want[nw][1]) == 2) { nw++; on = 1; e = strchr(e, ','); if (e) e++; } }
+    if (!on) return;
+    int hit = all && w >= 640 && h >= 360; for (int i = 0; i < nw; i++) hit |= want[i][0] == w && want[i][1] == h; if (!hit) return;
+    static uint64_t seen[256]; static int ns; uint64_t ra = (uint64_t)__builtin_return_address(0), k = ra ^ ((uint64_t)w << 48) ^ ((uint64_t)h << 32);
+    for (int i = 0; i < ns; i++) if (seen[i] == k) return; if (ns < 256) seen[ns++] = k; else return;
+    module_t *m = module_of((void *)ra); uint64_t *fp = (uint64_t *)__builtin_frame_address(0); char st[256]; int o = 0;
+    for (int d = 0; d < 6 && fp && o < 220; d++) { uint64_t r = fp[1]; module_t *mm = module_of((void *)r); if (!mm) break; o += snprintf(st + o, sizeof st - o, " %s+%#llx", mm->name, (unsigned long long)(r - (uint64_t)mm->base)); fp = (uint64_t *)fp[0]; }
+    LOG("[trace] texture size %dx%d set from %s+%#llx; stack%s", w, h, m ? m->name : "?", m ? (unsigned long long)(ra - (uint64_t)m->base) : 0ULL, o ? st : " ?");
+}
 NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = d; }
 NVN(nvnTextureBuilderSetSwizzle, void, NVNtextureBuilder *b, NVNtextureSwizzle r, NVNtextureSwizzle g, NVNtextureSwizzle bl, NVNtextureSwizzle a) {
     tex_builder_t *o = (tex_builder_t *)b; o->set_swz = 1; o->swz = (uint16_t)((r & 7) | (g & 7) << 3 | (bl & 7) << 6 | (a & 7) << 9);
@@ -2463,7 +2537,14 @@ HLE_FORCE("_Z22nvnNativeImageFinalizeP14NVNnativeImage", "native images are the 
 }
 HLE_FORCE("_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage", "a linear texture over the picture's memory", NVNboolean, h_ni_texture, NVNtexture *t, native_image_t *i) {
     uint8_t *mem; uint64_t size; uint32_t w, h, stride;
-    if (!dm_native_image(i->handle, &mem, &size, &w, &h, &stride)) { LOG("[RED] nvnTextureInitializeFromNativeImage: handle %#x names no picture", i->handle); return 0; }
+    if (!dm_native_image(i->handle, &mem, &size, &w, &h, &stride)) {
+        // Camera / GameChat images (Mario Kart World makes three textures from them at boot and aborts if one fails, main+0xd32438): the host has none, so an empty 16x16
+        // RGBA8 texture of its own, never written (sampling gives black)
+        static int nr; if (nr++ < 4) LOG("nvnTextureInitializeFromNativeImage: handle %#x names no picture: an empty 16x16 texture", i->handle);
+        NVNtextureBuilder tb; h_nvnTextureBuilderSetDefaults(&tb); h_nvnTextureBuilderSetDevice(&tb, i->dev);
+        h_nvnTextureBuilderSetTarget(&tb, NVN_TEXTURE_TARGET_2D); h_nvnTextureBuilderSetFormat(&tb, NVN_FORMAT_RGBA8); h_nvnTextureBuilderSetSize2D(&tb, 16, 16);
+        return h_nvnTextureInitialize(t, &tb);
+    }
     if (!i->has_pool) {
         NVNmemoryPoolBuilder pb; h_nvnMemoryPoolBuilderSetDefaults(&pb); h_nvnMemoryPoolBuilderSetDevice(&pb, i->dev); h_nvnMemoryPoolBuilderSetStorage(&pb, mem, size);
         h_nvnMemoryPoolBuilderSetFlags(&pb, NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
@@ -2641,17 +2722,24 @@ static struct vpool *vpool_at(const void *pool, uint64_t a) {   // caller holds 
 }
 int nvn_sparse_pool(const void *pool) { return pool && ((const pool_t *)pool)->vp; }   // no lock: set at Initialize, cleared at the first mapping (an aliased pool) or Finalize; called per texture lookup
 uint64_t nvn_sparse_gen(void) { return atomic_load(&g_vp_gen); }
-uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n) {
+// fill16: the 16 bytes an unmapped page reads as (NULL: zeros). ASTC needs a block of its own: an all-zero ASTC block is a reserved encoding that decodes to the error colour
+// (magenta), where the Switch 2 reads unmapped sparse tiles as zero texels; Mario Kart World's streamed ASTC world textures were mostly unmapped and the whole world came out pink
+static void fill_pattern(uint8_t *d, uint64_t k, const uint8_t *fill16) {
+    if (!fill16) { memset(d, 0, k); return; }
+    for (uint64_t i = 0; i < k; i += 16) memcpy(d + i, fill16, MIN(16, k - i));
+}
+uint64_t nvn_sparse_copy_fill(const void *pool, void *dst, uint64_t a, uint64_t n, const uint8_t *fill16) {
     pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_at(pool, a); uint64_t miss = 0;
-    if (!v) { pthread_mutex_unlock(&g_vp_mu); memset(dst, 0, n); return n; }
+    if (!v) { pthread_mutex_unlock(&g_vp_mu); fill_pattern(dst, n, fill16); return n; }
     for (uint64_t p = 0, o = a - (uint64_t)(uintptr_t)v->base; p < n;) {
         uint64_t at = o + p, k = 0x1000 - (at & 0xFFF); if (k > n - p) k = n - p;
         const vpte *e = at < v->size ? vpt_get(v, at) : NULL;
-        if (e && e->phys) memcpy((uint8_t *)dst + p, e->phys + (at & 0xFFF), k); else { memset((uint8_t *)dst + p, 0, k); miss += k; }
+        if (e && e->phys) memcpy((uint8_t *)dst + p, e->phys + (at & 0xFFF), k); else { fill_pattern((uint8_t *)dst + p, k, fill16); miss += k; }
         p += k;
     }
     pthread_mutex_unlock(&g_vp_mu); return miss;
 }
+uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n) { return nvn_sparse_copy_fill(pool, dst, a, n, NULL); }
 // Runs of consecutive physical pages behind [a, a+n): fn on each (nonzero stops the walk and is returned), or 1 at the first page mapped after gen (gen ~0 = do not look)
 static int vpt_walk(const void *pool, uint64_t a, uint64_t n, uint64_t gen, int (*fn)(const uint8_t *, uint64_t, uint64_t), uint64_t arg) {
     pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_at(pool, a); int r = 0;
@@ -2669,9 +2757,23 @@ static int vpt_walk(const void *pool, uint64_t a, uint64_t n, uint64_t gen, int 
     if (!r && rs) r = fn(rs, (uint64_t)(re - rs), arg);
     pthread_mutex_unlock(&g_vp_mu); return r;
 }
-static int run_written(const uint8_t *p, uint64_t n, uint64_t stamp) { return nvn_dirty_since(p, n, stamp); }
+// A sparse texture's mapped runs mostly lie in one physical pool: the walk keeps the dirty-tracking range it found, so each run is not looked up among every pool's range; one: set when
+// every run lies in one range, so a later check with no mapping change can ask only that range (nvn_dirty_range_since) instead of walking the page table (kartnative cf0344bb, b0046eb3:
+// MKW's 8192x8192x68 arrays, the hottest leaf of the submit thread)
+struct run_ctx { uint64_t stamp; const void *span; int multi; };
+static int run_written(const uint8_t *p, uint64_t n, uint64_t arg) { struct run_ctx *c = (struct run_ctx *)(uintptr_t)arg; const void *was = c->span; int r = nvn_dirty_since_keep(&c->span, p, n, c->stamp); c->multi |= was && c->span != was; return r; }
 static int run_protect(const uint8_t *p, uint64_t n, uint64_t unused) { (void)unused; nvn_dirty_protect(p, n); return 0; }
-int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp) { return vpt_walk(pool, a, n, gen, run_written, stamp); }
+int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp, const void **one) {
+    struct run_ctx c = {stamp, NULL, 0}; int r = vpt_walk(pool, a, n, gen, run_written, (uint64_t)(uintptr_t)&c);
+    if (one) *one = !r && !c.multi ? c.span : NULL;
+    return r;
+}
+// the physical memory behind the page at a of a sparse pool, NULL when unmapped (nvn_mtl.m sp_upload: tiles the game parks share one physical page)
+const void *nvn_sparse_phys(const void *pool, uint64_t a) {
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_at(pool, a); const void *r = NULL;
+    if (v) { uint64_t o = a - (uint64_t)(uintptr_t)v->base; const vpte *e = o < v->size ? vpt_get(v, o) : NULL; if (e) r = e->phys; }
+    pthread_mutex_unlock(&g_vp_mu); return r;
+}
 int nvn_sparse_mapped(const void *pool, uint64_t a, uint64_t n) {   // every page of [a, a+n) has memory behind it
     pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_at(pool, a); int ok = v != NULL;
     for (uint64_t o = v ? (a - (uint64_t)(uintptr_t)v->base) & ~0xFFFull : 0, end = v ? a - (uint64_t)(uintptr_t)v->base + n : 0; ok && o < end; o += 0x1000) { const vpte *e = o < v->size ? vpt_get(v, o) : NULL; ok = e && e->phys; }
@@ -2683,7 +2785,13 @@ NVN(nvnCommandBufferDrawElementsIndirect, void, NVNcommandBuffer *c, NVNdrawPrim
 }
 
 // Viewport / scissor / depth range: single and multiple forms
-NVN(nvnCommandBufferSetViewport, void, NVNcommandBuffer *c, int x, int y, int w, int h) { float v[4] = {(float)x, (float)y, (float)w, (float)h}; h_nvnCommandBufferSetViewports(c, 0, 1, v); }
+// DM_TRACE_VP=1 (diagnostic): each distinct caller of SetViewport with a width of 600 or more, once, with its size (where the game's render size is read; render scale work)
+static void vp_trace(void *ra, float x, float y, float w, float h) {
+    static int on = -1; if (on < 0) on = getenv("DM_TRACE_VP") != NULL; if (!on || w < 600) return;
+    static uint64_t seen[64]; static int n; uint64_t key = (uint64_t)(uintptr_t)ra ^ ((uint64_t)(uint32_t)w << 40) ^ ((uint64_t)(uint32_t)h << 20); for (int i = 0; i < n; i++) if (seen[i] == key) return; if (n >= 64) return; seen[n++] = key;
+    module_t *m = module_of(ra); LOG("[nvn] SetViewport %.0f,%.0f %.0fx%.0f from %s+%#llx", x, y, w, h, m ? m->name : "?", m ? (unsigned long long)((uint64_t)(uintptr_t)ra - (uint64_t)(uintptr_t)m->base) : 0ULL);
+}
+NVN(nvnCommandBufferSetViewport, void, NVNcommandBuffer *c, int x, int y, int w, int h) { float v[4] = {(float)x, (float)y, (float)w, (float)h}; vp_trace(__builtin_return_address(0), v[0], v[1], v[2], v[3]); h_nvnCommandBufferSetViewports(c, 0, 1, v); }
 NVN(nvnCommandBufferSetScissors, void, NVNcommandBuffer *c, int first, int n, const int *r) {
     if (first == 0 && n >= 1) h_nvnCommandBufferSetScissor(c, r[0], r[1], r[2], r[3]);
     if (first + n > 1) ONCE_LOG("SetScissors first=%d n=%d: the host uses only index 0", first, n);
@@ -2722,6 +2830,9 @@ NVN(nvnCommandBufferSetViewportSwizzles, void, NVNcommandBuffer *c, int first, i
     for (int i = 0; i < n; i++) for (int k = 0; k < 4; k++) r->sw[i][k] = (uint8_t)((s[4 * i + k] ^ 2 * k) & 7);
 }
 NVN(nvnCommandBufferSetAlphaRef, void, NVNcommandBuffer *c, float r) { REC(c, OP_ALPHA_REF, p_alpha_ref)->ref = r; }
+// NVN2 mesh draws (Mario Kart World's driving passes): task workgroups first..first + count of the bound task / mesh program. The replay runs the task and mesh stages as
+// compute dispatches into host windows and draws those with a generated vertex shader (nvn_mtl.m mesh_draw, dmsh_nvn2mesh.py)
+NVN_NOPROTO(nvnCommandBufferDrawMeshTasks, void, NVNcommandBuffer *c, int first, int count) { *REC(c, OP_DRAW_MESH, p_draw_mesh) = (p_draw_mesh){first, count}; }
 NVN(nvnCommandBufferSetLineWidth, void, NVNcommandBuffer *c, float w) { (void)c; if (w != 1.0f) ONCE_LOG("SetLineWidth %.2f: Metal has only 1-pixel lines", w); }
 NVN(nvnCommandBufferSetPointSize, void, NVNcommandBuffer *c, float s) { (void)c; (void)s; ONCE_LOG("SetPointSize: the point size comes from the shader"); }
 NVN(nvnCommandBufferSetPrimitiveRestart, void, NVNcommandBuffer *c, uint32_t en, int idx) { *REC(c, OP_PRIM_RESTART, p_prim_restart) = (p_prim_restart){(en & 0xff) != 0, (uint32_t)idx}; }

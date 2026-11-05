@@ -65,8 +65,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x0bf, InstName.Popc, APopc, uniform: true);
             alu(0x100, InstName.Flo, AFlo);
             alu(0x0bd, InstName.Flo, AFlo, uniform: true);
-            alu(0x101, InstName.Flo, ABrev);
-            alu(0x0be, InstName.Flo, ABrev, uniform: true);
+            alu(0x101, InstName.Brev, ABrev);
+            alu(0x0be, InstName.Brev, ABrev, uniform: true);
             alu(0x01a, InstName.Bfe, ASgxt);
             alu(0x09a, InstName.Bfe, ASgxt, uniform: true);
 
@@ -85,6 +85,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0x204, InstName.R2p, AR2p, N, writesRd: false);
             x(0x803, InstName.P2r, AP2r, N);
             x(0x203, InstName.P2r, AP2r, N);
+            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
+            x(0x9ab, InstName.Nop, ANop, N, writesRd: false);   // ERRBAR: nothing to wait for per thread
             x(0x81c, InstName.Psetp, APlop3, N, writesRd: false);
             x(0x89c, InstName.Psetp, APlop3, N, uniform: true, writesRd: false);
             x(0x806, InstName.Vote, AVote, N);
@@ -1226,7 +1228,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, res, u);
         }
 
-        // BREV Rd, b: the bits reversed. The compiler's find-lowest-set-bit is BREV, then FLO.SH, then a compare with -1 (Fire Emblem Fortune's Weave's light loops: 3,057 of them)
+        // BREV Rd, b: b with its bits reversed (Mario Kart World's task and mesh shaders, uniform)
         public static void ABrev(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -1272,18 +1274,30 @@ namespace Ryujinx.Graphics.Shader.Instructions
             EmitP2r(context, Register(x.Ra, RegisterType.Gpr), Register(x.Rd, RegisterType.Gpr), mask, (ByteSel)x.Bits(76, 78), false);
         }
 
-        // UP2UR URd, URZ, 1: the uniform predicate UP0 as 0 or 1 in a uniform register. Pokemon Pokopia's two compute shaders with it use this one encoding (a mask over UP0..UP6 with a merge source
-        // is P2R's form, not seen here)
+        // UP2UR URd, URa, mask (32..64): the uniform predicates UP0..UP6 as bits of byte 76..78 of URd, the other bits from URa (Mario Kart World)
         public static void AUp2ur(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
+            int shift = x.Bits(76, 78) * 8;
+            int mask = (int)(x.Imm32 & 0xff) << shift;
+            int ura = x.Bits(24, 30);
+            Operand insert = Const(0);
 
-            if (x.Bits(24, 30) != RegisterConsts.UniformZeroIndex || x.Imm32 != 1)
+            for (int i = 0; i < RegisterConsts.PredsCount; i++)
             {
-                throw AFail(context, "UP2UR with a merge source or another mask");
+                insert = context.BitwiseOr(insert, context.ConditionalSelect(APredReg(i, true), Const(1 << (i + shift)), Const(0)));
             }
 
-            ASet(context, x, context.ConditionalSelect(APredReg(0, uniform: true), Const(1), Const(0)), uniform: true);
+            Operand src = ura == RegisterConsts.UniformZeroIndex ? Const(0) : Register(ura, RegisterType.Uniform);
+
+            ASet(context, x, context.BitwiseOr(context.BitwiseAnd(src, Const(~mask)), context.BitwiseAnd(insert, Const(mask))), true);
+        }
+
+        // MEMBAR: a fence for this thread's memory accesses, not an execution barrier. Translated as MemoryBarrier it became a Metal threadgroup_barrier, which every
+        // thread of the group must reach: in Mario Kart World's ocean FFT compute shaders some threads did not, and the GPU hung. Metal keeps a thread's own accesses in
+        // order, so it emits nothing
+        public static void AMembar(EmitterContext context)
+        {
         }
 
         // PLOP3 Pd0, Pd1, a (87..90), b (77..80), c (68..71; uniform with bit 67), lut0 (64..67 | 72..77 << 3), lut1 (16..24)

@@ -271,6 +271,14 @@ namespace Ryujinx.Graphics.Shader.Decoders
                     case 0xf8c:
                         context.SetUsedFeature(FeatureFlags.SharedMemory);
                         break;
+                    case 0x923:
+                    case 0x927:
+                        if (gpuAccessor.QueryAmpereIsbe() != null)
+                        {
+                            context.SetUsedFeature(FeatureFlags.SharedMemory);   // a native task / mesh shader's stage buffer is kept in shared memory (InstEmitAmpereMem.cs AIsbe)
+                        }
+
+                        break;
                     case 0x986:
                     case 0x386:
                     case 0x98e:

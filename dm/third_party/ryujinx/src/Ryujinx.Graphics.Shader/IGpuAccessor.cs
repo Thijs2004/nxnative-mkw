@@ -39,6 +39,24 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// NVN2 (Switch 2) task (6) or mesh (7) shaders, translated as compute shaders for the host's mesh draw emulation (InstEmitAmpereMesh.cs); 0 for other shaders.
+        /// </summary>
+        /// <summary>
+        /// NVN2 (Switch 2) task and mesh shaders built as Metal object / mesh functions (dmsh_meshstage.py): the byte offsets in shared memory where the translator keeps their stage buffer
+        /// (ISBE) regions, written and read by ISBEWR / ISBERD: the output attributes (a task's payload), the map (a mesh's primitive count and indices) and the input attributes (the workgroup
+        /// index, a mesh's task payload); null otherwise (the mesh draw emulation's windows, QueryNvn2MeshStage, or other shaders)
+        /// </summary>
+        int[] QueryAmpereIsbe()
+        {
+            return null;
+        }
+
+        int QueryNvn2MeshStage()
+        {
+            return 0;
+        }
+
+        /// <summary>
         /// Gets a span of the specified memory location, containing shader code.
         /// </summary>
         /// <param name="address">GPU virtual address of the data</param>

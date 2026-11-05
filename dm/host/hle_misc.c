@@ -220,3 +220,54 @@ HLE_FORCE("_ZN2nn10streamplay27GetGuestVibrationDeviceInfoEPNS_3hid19VibrationDe
 HLE_FORCE("_ZN2nn10streamplay18GetGuestJcmsHandleERKNS0_10GuestPadIdERKNS_3hid8JcmsTypeE", "guest Joy-Con mouse handle: none (no guest)", uint32_t, h_stpl_JcmsHandle, const void *id, const void *type) { (void)id; (void)type; return 0; }
 HLE_FORCE("_ZN2nn10streamplay18GetGuestJcmsStatesEPNS0_14GuestJcmsStateEiRKNS0_15GuestJcmsHandleE", "guest Joy-Con mouse states: none (no guest)",
           int, h_stpl_JcmsStates, void *out, int n, const void *h) { (void)out; (void)n; (void)h; return 0; }
+
+// ---------- Switch 2 system APIs (SDK 21 Ounce builds, Mario Kart World) ----------
+// Graphics scale (oe): the SDK maps the system's 10 / 20 / 30 to 0 / 1 / 2 (sdk+0x58fd40). The host reports 0, the smallest scale: the cheapest to render
+HLE_FORCE("_ZN2nn2oe32BeginPresentPhotographedContentsEv", "screenshot content marker: no system capture on the host", void, h_oe_PhotoBegin, void) {}
+HLE_FORCE("_ZN2nn2oe30EndPresentPhotographedContentsEv", "screenshot content marker: no system capture on the host", void, h_oe_PhotoEnd, void) {}
+// gs: the graphics system. CheckGraphicsSystemInitialized aborts unless the SDK's own graphics init set its flag (sdk+0x46e898), which the host's nv:: takeover does not run
+HLE_FORCE("_ZN2nn2gs3sdk30CheckGraphicsSystemInitializedEPKcm", "graphics system: initialized by the host", void, h_gs_CheckInit, const char *who, uint64_t n) { (void)who; (void)n; }
+// Native memory: CPU memory the GPU may map (NVN2's ExternalMemoryPool takes its handle). The handle keeps the address and size; the host's GPU reaches all guest memory already
+HLE_FORCE("_ZN2nn2gs3sdk18CreateNativeMemoryEPNS0_18NativeMemoryHandleEPvmNS_2os16MemoryPermissionENS0_3cpu18MemoryCacheabilityE", "native memory: a handle naming the address and size",
+          uint32_t, h_gs_CreateNative, uint64_t *h, void *p, uint64_t n, int perm, int cache) { (void)perm; (void)cache; h[0] = (uint64_t)(uintptr_t)p; h[1] = n; return 0; }
+HLE_FORCE("_ZN2nn2gs3sdk19DestroyNativeMemoryENS0_18NativeMemoryHandleE", "native memory: nothing to free", void, h_gs_DestroyNative, uint64_t a, uint64_t b) { (void)a; (void)b; }
+HLE_FORCE("_ZN2nn6applet24BeginUsingCameraResourceEv", "camera: none on the host", void, h_applet_CamBegin, void) {}
+HLE_FORCE("_ZN2nn6applet22EndUsingCameraResourceEv", "camera: none on the host", void, h_applet_CamEnd, void) {}
+// GameChat (nn::chat, Switch 2): the host has no chat service. Initialization succeeds, no chat is ever active, there is no room and no camera stream; calls that would start one do nothing
+HLE_FORCE("_ZN2nn4chat10InitializeEv", "GameChat: none on the host", void, h_chat_Init, void) {}
+HLE_FORCE("_ZN2nn4chat10IsChattingEv", "GameChat: never chatting", int, h_chat_IsChatting, void) { return 0; }
+HLE_FORCE("_ZN2nn4chat11GetRoomInfoEPNS0_8RoomInfoE", "GameChat: no room (an error result; the info is left as it was)", uint32_t, h_chat_RoomInfo, void *ri) { (void)ri; return 0x2a4ff; }
+HLE_FORCE("_ZN2nn4chat28AttachToRoomInfoChangedEventEPNS_2os11SystemEventE", "GameChat room change event: bound, never signalled", void, h_chat_RoomEv, void *ev) { hle_bind_system_event(ev, 0); }
+HLE_FORCE("_ZN2nn4chat13SetSharingKeyERKNS0_10SharingKeyE", "GameChat: none on the host", void, h_chat_SetKey, const void *k) { (void)k; }
+HLE_FORCE("_ZN2nn4chat15ClearSharingKeyEv", "GameChat: none on the host", void, h_chat_ClearKey, void) {}
+HLE_FORCE("_ZN2nn4chat13ShowChatStartERKNS_7account3UidE", "GameChat: no chat applet on the host", void, h_chat_ShowStart, const void *u) { (void)u; }
+HLE_FORCE("_ZN2nn4chat20SetScreenSharingModeENS0_17ScreenSharingModeE", "GameChat: none on the host", void, h_chat_ScreenShare, int m) { (void)m; }
+HLE_FORCE("_ZN2nn4chat22ShowCameraSharingGuideEv", "GameChat: no chat applet on the host", void, h_chat_CamGuide, void) {}
+HLE_FORCE("_ZN2nn4chat25StartLocalCameraStreamingEv", "GameChat camera: none", void, h_chat_LocStart, void) {}
+HLE_FORCE("_ZN2nn4chat24StopLocalCameraStreamingEv", "GameChat camera: none", void, h_chat_LocStop, void) {}
+HLE_FORCE("_ZN2nn4chat26StartRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", "GameChat camera: none", void, h_chat_RemStart, const void *a) { (void)a; }
+HLE_FORCE("_ZN2nn4chat25StopRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", "GameChat camera: none", void, h_chat_RemStop, const void *a) { (void)a; }
+HLE_FORCE("_ZN2nn4chat25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi", "GameChat camera: no image", uint64_t, h_chat_LocImg, const void *t, int i) { (void)t; (void)i; return 0; }
+HLE_FORCE("_ZN2nn4chat26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi", "GameChat camera: no image", uint64_t, h_chat_RemImg, const void *t, int i) { (void)t; (void)i; return 0; }
+HLE_FORCE("_ZN2nn4chat27RequestNextLocalCameraImageEPNS_2gs16NativeSyncHandleEPNS0_20LocalCameraVideoTypeEiS2_", "GameChat camera: no image (an error result)", uint32_t, h_chat_LocNext, void *s, void *t, int i, uint64_t a, uint64_t b) { (void)s; (void)t; (void)i; (void)a; (void)b; return 0x2a4ff; }
+HLE_FORCE("_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEPNS0_21RemoteCameraVideoTypeEiS2_RKNS_7account23NetworkServiceAccountIdE", "GameChat camera: no image (an error result)", uint32_t, h_chat_RemNext, void *s, void *t, int i, uint64_t a, uint64_t b, const void *id) { (void)s; (void)t; (void)i; (void)a; (void)b; (void)id; return 0x2a4ff; }
+HLE_FORCE("_ZN2nn4chat33InitializeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeEiiiPvm", "GameChat camera storage: kept by the game, unused", void, h_chat_LocStor, void *t, int a, int b, int c, void *p, uint64_t n) { (void)t; (void)a; (void)b; (void)c; (void)p; (void)n; }
+HLE_FORCE("_ZN2nn4chat34InitializeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeEiiiPvm", "GameChat camera storage: kept by the game, unused", void, h_chat_RemStor, void *t, int a, int b, int c, void *p, uint64_t n) { (void)t; (void)a; (void)b; (void)c; (void)p; (void)n; }
+HLE_FORCE("_ZN2nn4chat31FinalizeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeE", "GameChat camera storage", void, h_chat_LocStorFini, void *t) { (void)t; }
+HLE_FORCE("_ZN2nn4chat32FinalizeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeE", "GameChat camera storage", void, h_chat_RemStorFini, void *t) { (void)t; }
+HLE_FORCE("_ZN2nn4chat35CalculateLocalCameraVideoBufferSizeEiii", "GameChat camera buffer: one page (never used)", uint64_t, h_chat_LocSize, int a, int b, int c) { (void)a; (void)b; (void)c; return 0x1000; }
+HLE_FORCE("_ZN2nn4chat36CalculateRemoteCameraVideoBufferSizeEiii", "GameChat camera buffer: one page (never used)", uint64_t, h_chat_RemSize, int a, int b, int c) { (void)a; (void)b; (void)c; return 0x1000; }
+HLE_FORCE("_ZN2nn4chat36ShowLocalCameraConfigurationVersion0ENS0_25CameraImageProcessingModeE", "GameChat: no camera applet on the host", void, h_chat_CamCfg, int m) { (void)m; }
+HLE_FORCE("_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", "GameChat: none on the host", void, h_chat_FsBegin, int on) { (void)on; }
+HLE_FORCE("_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", "GameChat: none on the host", void, h_chat_FsEnd, void) {}
+// Display HDR and variable refresh (nn::vi, Switch 2): the host's output is SDR at a fixed rate
+HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", "HDR metadata: SDR output", uint32_t, h_vi_HdrBezier, void *l, float a, float b, float c) { (void)l; (void)a; (void)b; (void)c; return 0; }
+// NVN native images (camera / GameChat images, and decoded video pictures): hle_nvn.c
+// Camera (nn::camera, Switch 2 USB camera): none on the host. CreateCameraContext gives a host session that answers every request with zeroed output, as a camera service with nothing plugged in (it otherwise reaches the camera service and crashes on an uninitialized lock, sdk+0x2be9a8);
+// the rest are never reached without a context but answer harmlessly
+uint32_t dm_sf_open(const char *name);
+HLE_FORCE("_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE", "camera context: a host session answering every request with zeroed output (no camera connected)", uint32_t, h_cam_Ctx, uint64_t *h) { if (h) *h = dm_sf_open("camera"); return 0; }
+HLE_FORCE("_ZN2nn6camera3sdk23CalculateImageArraySizeEPNS_3gsv10MemorySizeES4_RKNS2_7imgdesc4impl4user5ounce25CameraUserImagePreferenceEj", "camera: none on the host", uint32_t, h_cam_Size, uint64_t *a, uint64_t *b, const void *p, uint32_t n) { (void)p; (void)n; if (a) *a = 0x1000; if (b) *b = 0x1000; return 0; }
+HLE_FORCE("_ZN2nn6camera3sdk22CreateOutputBufferPoolEPNS_3gsv15UserImageHandleERKNS2_7imgdesc4impl4user5ounce25CameraUserImagePreferenceEjNS2_16UserMemoryHandleE", "camera: none on the host (an error result)", uint32_t, h_cam_Pool, uint64_t *h, const void *p, uint32_t n, uint64_t m) { (void)p; (void)n; (void)m; if (h) *h = 0; return 0x2a8ff; }
+HLE_FORCE("_ZN2nn6camera3sdk23DestroyOutputBufferPoolENS_3gsv15UserImageHandleE", "camera: none on the host", void, h_cam_PoolFree, uint64_t h) { (void)h; }
+HLE_FORCE("_ZN2nn6camera3sdk28DestroyAliasOutputBufferPoolENS_3gsv15UserImageHandleE", "camera: none on the host", void, h_cam_APoolFree, uint64_t h) { (void)h; }

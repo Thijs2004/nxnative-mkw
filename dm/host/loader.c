@@ -1,6 +1,8 @@
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
+#include <stdatomic.h>
+#include <time.h>
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -297,6 +299,20 @@ static void install_fps_state(module_t *m) {
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
+// The present interval lock is paused while a movie plays (dm_fps_movie_tick from each decoded picture, hle_codec_video.c) and back half a second after the last picture
+// (dm_fps_movie_check at each present, hle_nvn.c): Mario Kart World's pre-race movie, played with the 30 fps lock, cut its sound out for ~10 ms every 0.74 s (each 32768-sample
+// block at 44.1 kHz came late) on the Mac and the iPhone; with the game's own interval it plays clean
+static float g_fps_lock; static _Atomic uint64_t g_movie_ns; static _Atomic int g_movie_paused;
+static uint64_t fps_now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
+void dm_fps_movie_tick(void) {
+    if (!dm_fps_state || g_fps_lock == 0.0f) return;
+    atomic_store(&g_movie_ns, fps_now_ns());
+    if (!atomic_exchange(&g_movie_paused, 1)) { float z = 0.0f; memcpy(dm_fps_state + 0x14, &z, sizeof z); LOG("%s: present interval lock paused while a movie plays", g_fps_mod); }
+}
+void dm_fps_movie_check(void) {
+    if (!atomic_load_explicit(&g_movie_paused, memory_order_relaxed) || fps_now_ns() - atomic_load(&g_movie_ns) < 500000000ull) return;
+    if (atomic_exchange(&g_movie_paused, 0)) { memcpy(dm_fps_state + 0x14, &g_fps_lock, sizeof g_fps_lock); LOG("%s: present interval locked again for %d fps (movie over)", g_fps_mod, (int)g_fps_lock); }
+}
 void dm_fps_state_apply(void) {
     if (!dm_fps_state) return;
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
@@ -307,6 +323,10 @@ void dm_fps_state_apply(void) {
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
     if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
+    // Present interval lock (+0x14; stubs that write the game's own interval: Mario Kart World's launcher Frame rate): 30 or 60, 0 = the game decides. A word of its own: DM_FPS_TARGET at +0 would also
+    // switch on the host's frame step, which re-times and drops frames
+    const char *lk = getenv("DM_FPS_LOCK"); float lf = lk ? (float)atoi(lk) : 0.0f; if (lf != 30.0f && lf != 60.0f) lf = 0.0f;
+    memcpy(dm_fps_state + 0x14, &lf, sizeof lf); g_fps_lock = lf; if (lf) LOG("%s: present interval locked for %d fps (DM_FPS_LOCK)", g_fps_mod, (int)lf);
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
 }

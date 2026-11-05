@@ -1,0 +1,13 @@
+# vertex / pixel shader pairs seen in play (pso_user.tsv) that the split tables lack, for vertex output padding (mkw-work/tools/harvest_pairs.py): vertex key <TAB> pixel key
+02836ddecebb84ae	3cc3501255bb2d74
+03e0e55652b339cf	3cc3501255bb2d74
+47b81cdc7313cd82	1e3e40ea043238db
+4bb75baa3bd03ff9	3cafb02cdf0d87fb
+55cd70a1d0c7e7c0	0d3f740b523e35b0
+6a85d153a4f8a211	4f296d872429b144
+879a6eb2ba53b1a6	3cc3501255bb2d74
+a79504e227292fc5	d08d7ebf0fd29511
+c3365c8c71225add	1f9ce64197c4f9d8
+c5d374e43fe8227f	3cc3501255bb2d74
+e633c4c02e2dced7	3cc3501255bb2d74
+ec8d31359386c835	dcb0504c844f1ecc

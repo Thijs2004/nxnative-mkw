@@ -3,7 +3,12 @@
 import SwiftUI
 
 extension LauncherModel {
-    func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0 }) }
+    func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0; if s.env == "DM_PRESET" { if $0 != "custom" { self.applyPreset($0) } } else { self.userChanged(s.env) } }) }
+    // Turning on Free texture memory also picks what it was tuned with: Render scale 65% and Medium textures (Mario Kart World on an 8 GB iPhone), unless an env file or the launch fixes them
+    func turnedOn(_ env: String) {
+        guard env == "DM_NVN_TEX_DROP" else { return }
+        for (k, v) in [("DM_RENDER_SCALE", "0.65"), ("DM_NVN_TEX_FLOOR", "512")] where !fixed.contains(k) && settings.contains(where: { $0.env == k }) { values[k] = v }
+    }
 }
 
 struct SettingRow: View {
@@ -17,7 +22,7 @@ struct SettingRow: View {
     }
     private var rangeValue: Binding<Double> {
         Binding(get: { Double(m.values[s.env] ?? s.def) ?? s.max ?? 1 },
-                set: { m.values[s.env] = String(format: "%.2f", $0) })
+                set: { m.values[s.env] = String(format: "%.2f", $0); m.userChanged(s.env) })
     }
     private var percentage: String { m.rangeLabel(s, rangeValue.wrappedValue) }
 
@@ -50,7 +55,7 @@ struct SettingRow: View {
                         .accessibilityValue(percentage)
                 }
             default:
-                Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue })) {
+                Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue; m.userChanged(s.env); if $0 { m.turnedOn(s.env) } })) {
                     settingLabel
                 }
             }

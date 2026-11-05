@@ -245,6 +245,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
         // compute tables), texture slot t to c[2] + 0x20 + 8 t and image slot i to c[2] + 0x120 + 8 i (NVN's handle tables). Other offsets stay.
         private static (int Bank, int Offset) AMapC0(EmitterContext context, int bank, int offset)
         {
+            if (bank == 0 && AMeshStage(context, out int meshStage) && AMeshC0(meshStage, offset) is (int, int) mapped)   // task / mesh storage table → compute's
+            {
+                return mapped;
+            }
+
             int[] layout = bank == 0 ? context.TranslatorContext.GpuAccessor.QueryAmpereComputeC0Layout() : null;
 
             if (layout == null || layout.Length < 5)

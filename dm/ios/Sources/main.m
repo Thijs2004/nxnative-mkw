@@ -53,9 +53,49 @@ static NSArray<NSString *> *romfs_document_images(NSString *doc) {
     }];
     return imgs;
 }
+// A large image pushed in pieces (scripts/push_romfs_parts.sh: Documents/romfs.img.part000, .part001, ... and the count in Documents/romfs.img.parts): one devicectl copy of a
+// 22 GB file (Mario Kart World) broke off every time, over Wi-Fi and USB. Once every piece is there they are appended to Documents/romfs.img in order, each deleted after its
+// append, so the phone holds the image plus one piece at most. An interrupted join resumes: romfs.img.joined counts the pieces already appended
+static int g_romfs_joining;   // the join stopped for the launch time limit: the boot message says to open the app again
+static void romfs_join_parts(NSString *doc) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *countPath = [doc stringByAppendingPathComponent:@"romfs.img.parts"];
+    NSString *donePath = [doc stringByAppendingPathComponent:@"romfs.img.joined"], *img = [doc stringByAppendingPathComponent:@"romfs.img"];
+    // A complete image copied some other way (the Files app, from an external SSD: RomFS.img) wins: the pieces, the join's markers and a half-joined romfs.img go
+    for (NSString *other in romfs_document_images(doc)) {
+        if (!romfs_image_complete(other) || !romfs_identity_accepts(other)) continue;
+        NSArray *names = [fm contentsOfDirectoryAtPath:doc error:nil]; int dropped = 0;
+        for (NSString *nm in names) if ([nm hasPrefix:@"romfs.img.part"] || [nm isEqualToString:@"romfs.img.joined"]) { [fm removeItemAtPath:[doc stringByAppendingPathComponent:nm] error:nil]; dropped++; }
+        if (![other isEqualToString:img] && [fm fileExistsAtPath:img] && !romfs_image_complete(img)) { [fm removeItemAtPath:img error:nil]; dropped++; }
+        if (dropped) fprintf(stderr, "boot: %s is complete: %d leftover piece files removed\n", other.lastPathComponent.UTF8String, dropped);
+        return;
+    }
+    int n = [[NSString stringWithContentsOfFile:countPath encoding:NSUTF8StringEncoding error:nil] intValue];
+    if (n <= 0) return;
+    int done = [[NSString stringWithContentsOfFile:donePath encoding:NSUTF8StringEncoding error:nil] intValue];
+    for (int i = done; i < n; i++)   // every piece still to append must be there before anything is touched
+        if (![fm fileExistsAtPath:[doc stringByAppendingPathComponent:[NSString stringWithFormat:@"romfs.img.part%03d", i]]]) { fprintf(stderr, "boot: romfs.img piece %d of %d missing: not joined yet\n", i, n); return; }
+    if (!done) { [fm removeItemAtPath:img error:nil]; [fm createFileAtPath:img contents:nil attributes:nil]; }
+    NSFileHandle *out = [NSFileHandle fileHandleForWritingAtPath:img]; if (!out) return;
+    CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+    for (int i = done; i < n; i++) {
+        if (CFAbsoluteTimeGetCurrent() - t0 > 10.0) { g_romfs_joining = 1; fprintf(stderr, "boot: romfs.img join paused at piece %d of %d (launch time limit): open the app again\n", i, n); break; }   // iOS kills an app that takes about 20 s to start
+        NSString *part = [doc stringByAppendingPathComponent:[NSString stringWithFormat:@"romfs.img.part%03d", i]];
+        NSFileHandle *in = [NSFileHandle fileHandleForReadingAtPath:part]; if (!in) break;
+        [out seekToEndOfFile];
+        for (;;) { @autoreleasepool { NSData *d = [in readDataOfLength:64u << 20]; if (!d.length) break; [out writeData:d]; } }
+        [in closeFile]; [out synchronizeFile];
+        [[NSString stringWithFormat:@"%d", i + 1] writeToFile:donePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [fm removeItemAtPath:part error:nil];
+        fprintf(stderr, "boot: romfs.img piece %d of %d appended\n", i + 1, n);
+    }
+    [out closeFile];
+    if ([[NSString stringWithContentsOfFile:donePath encoding:NSUTF8StringEncoding error:nil] intValue] >= n) { [fm removeItemAtPath:countPath error:nil]; [fm removeItemAtPath:donePath error:nil]; }
+}
 static NSString *romfs_locate(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    romfs_join_parts(doc);
     for (NSString *img in romfs_document_images(doc)) {
         if (!romfs_image_complete(img) || !romfs_identity_accepts(img)) continue;
         // A folder copy from before images is now dead weight of up to many GB (often cut off partway). Deleting its 300,000 files here took longer than iOS allows an app to start
@@ -114,8 +154,14 @@ static void romfs_identity_report(NSString *doc) {
     romfs_id want, got;
     int rc = romfs_id_check([NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.id"].fileSystemRepresentation,
                             (romfs_document_images(doc).firstObject ?: [doc stringByAppendingPathComponent:@"romfs.img"]).fileSystemRepresentation, &want, &got);
+    if (g_romfs_joining) { snprintf(g_boot_message, sizeof g_boot_message, "Preparing the game files (joining the pieces copied from the Mac).\nClose the app and open it again to continue; this happens only once."); fprintf(stderr, "boot: %s\n", g_boot_message); return; }
     if (rc == ROMFS_ID_OK || rc == ROMFS_ID_NONE) return;
     romfs_id_message(rc, &want, &got, NSBundle.mainBundle.bundleIdentifier.UTF8String ?: "<bundle ID>", g_boot_message, sizeof g_boot_message);
+    {   // the other way, without a Mac: the Files app (Documents is shared, UIFileSharingEnabled)
+        NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"this app";
+        size_t l = strlen(g_boot_message);
+        snprintf(g_boot_message + l, sizeof g_boot_message - l, "\nOr copy RomFS.img with the Files app into On My iPhone > %s, then open the app again.", name.UTF8String);
+    }
     fprintf(stderr, "[RED] boot: %s\n", g_boot_message);
 }
 
@@ -191,6 +237,8 @@ static int g_boot_ok;
 static void *boot_thread(void *p) {
     (void)p;
     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
+    // guest heap memory from donor extensions before the host reserves the guest block (ram_donor.m; hle_svc.c maps it onto the heap). 7 GB unless DM_RAM_DONOR says otherwise
+    uint64_t dm_ram_donor_prepare(uint64_t want); dm_ram_donor_prepare(7ull << 30);
     int rc = dm_main(g_argc, g_argv);
     fprintf(stderr, "boot: dm_main returned %d\n", rc);
     return NULL;

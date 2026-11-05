@@ -1,3 +1,11 @@
+# nxnative-mkw
+
+Mario Kart World **with update v917504** on iPhone and Mac, built on [nxnative](https://github.com/seedds/nxnative). It needs your own dump of the game with that update. No game files are included. **Start with the [install tutorial](TUTORIAL.md).**
+
+What this fork adds for Mario Kart World: the v917504 game profile and its system stubs, a graphics preset menu on iPhone (Full / High / Medium / Low), the game's own dynamic resolution as a render scale, a 30 fps lock that pauses for movies, texture quality, and memory work so a race fits an 8 GB iPhone. Details are in the [game's note](dm/games/0400C3F00006E000/README.md).
+
+The rest of this page is nxnative's.
+
 # nxnative
 
 Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.

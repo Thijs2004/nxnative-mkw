@@ -37,8 +37,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0x988, InstName.Sts, AStLocalShared, N, writesRd: false);
             x(0x38c, InstName.Atoms, AAtoms, N);
             x(0x38d, InstName.Atoms, AAtomsCas, N);
-            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
-            x(0x9ab, InstName.Membar, AErrbar, N, writesRd: false);
 
             x(0xb60, InstName.Tex, ATex, InstProps.Tex);
             x(0x361, InstName.Tex, ATex, InstProps.Tex);
@@ -54,6 +52,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0xb9b, InstName.Sust, ASurface, N, writesRd: false);
             x(0xb9d, InstName.Sust, ASurface, N, writesRd: false);
             x(0x593, InstName.Suatom, ASuatom, N);
+            x(0x59f, InstName.Sured, ASured, N, writesRd: false);
             x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
         }
 
@@ -95,6 +94,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             alu(0x124, InstName.Out, AOut);
             x(0x923, InstName.Isberd, AIsberd, N);
+            x(0x927, InstName.Isbewr, AMst, N, writesRd: false);   // MST: task / mesh shaders only (InstEmitAmpereMesh.cs)
             x(0x34e, InstName.Lepc, ALepc, N);
             x(0x357, InstName.Nop, ANop, N, writesRd: false);
             x(0x957, InstName.Nop, ANop, N, writesRd: false);
@@ -116,8 +116,68 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
         }
 
+        // ISBERD Rd, [Ra + imm] / ISBEWR (MST) [Ra + imm], Rb in a task or mesh shader built as a Metal object / mesh function (QueryAmpereIsbe, dmsh_meshstage.py; Plumber Racer 2's
+        // native mesh pipelines): the offset 40..56, the size 74..76 (8, 16 or 32 bits), the access 76..78 (0 map, 3 attributes), skew 78, output 79, as Mesa's NAK encodes them. The
+        // stage buffer's three regions live in shared memory and the build's rewrite reads them at the end. The map is byte-addressed (the primitive count as a word at byte 3, each index a
+        // byte from byte 4): each of its bytes gets a word here, so the threads writing a primitive's indices never share a word and the count at 3 overlaps no index
+        private static bool AIsbe(EmitterContext context, AmpereOp x, bool store)
+        {
+            int[] isbe = context.TranslatorContext.GpuAccessor.QueryAmpereIsbe();
+
+            if (isbe == null || isbe.Length < 3)
+            {
+                return false;
+            }
+
+            int access = x.Bits(76, 78), size = x.Bits(74, 76);
+
+            if (access == 0)
+            {
+                Operand word = context.IAdd(context.IAdd(AGpr(x.Ra), Const(x.Bits(40, 56))), Const(isbe[1] / 4));
+                int id = context.ResourceManager.SharedMemoryId;
+
+                if (store)
+                {
+                    Operand v = AGpr(x.Rb);
+                    context.Store(StorageKind.SharedMemory, id, word, size == 0 ? context.BitwiseAnd(v, Const(0xff)) : size == 1 ? context.BitwiseAnd(v, Const(0xffff)) : v);
+                }
+                else if (x.Rd < RegisterConsts.RegisterZeroIndex)
+                {
+                    context.Copy(Register(x.Rd, RegisterType.Gpr), context.Load(StorageKind.SharedMemory, id, word));
+                }
+
+                return true;
+            }
+
+            int region = x.Bit(79) ? isbe[0] : isbe[2];
+            LsSize2 ls = size switch { 0 => LsSize2.U8, 1 => LsSize2.U16, _ => LsSize2.B32 };
+            Operand addr = context.IAdd(AGpr(x.Ra), Const(region));
+
+            if (store)
+            {
+                EmitStore(context, StorageKind.SharedMemory, ls, addr, x.Rb, x.Bits(40, 56));
+            }
+            else
+            {
+                EmitLoad(context, StorageKind.SharedMemory, ls, addr, x.Rd, x.Bits(40, 56));
+            }
+
+            return true;
+        }
+
         public static void AIsberd(EmitterContext context)
         {
+            if (AIsbe(context, new AmpereOp(context.CurrOp), false))
+            {
+                return;
+            }
+
+            if (AMeshStage(context, out int meshStage))   // MLD in a task / mesh shader (InstEmitAmpereMesh.cs)
+            {
+                AMld(context, meshStage);
+                return;
+            }
+
             AmpereOp x = new(context.CurrOp);
 
             if (x.Rd < RegisterConsts.RegisterZeroIndex)
@@ -316,17 +376,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, res);
         }
 
-        // MEMBAR: the order of this thread's memory operations
-        public static void AMembar(EmitterContext context)
-        {
-            context.MemoryBarrier();
-        }
-
-        // ERRBAR, after a MEMBAR: waits for errors of earlier memory operations to be reported, which here is nothing to do
-        public static void AErrbar(EmitterContext context)
-        {
-        }
-
         // ATOMS.CAS Rd, [Ra + offset], Rb (expected), Rc (new value): Rd = 1 when the swap happened, not the old value (Fire Emblem Fortune's Weave's only use is a retry loop for a float add that repeats until Rd == 1).
         // Only the 32-bit form (operation 3 at 87..91, size 0) occurs
         public static void AAtomsCas(EmitterContext context)
@@ -456,6 +505,22 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false);
+        }
+
+        // SURED [Ra], Rb (0x59f): SUATOM without a destination, an image reduction through a handle (handle 40..59, dimension 61..64, size 73..76, operation 87..90 as
+        // RED's). Mario Kart World's DrivePassShaderDefault compute ab77eaee44cfef88 adds into a 2D U32 image with it (SURED.ADD.U32): untranslated, the pass never ran and
+        // its image kept whatever memory Metal gave it, garbage on the iPhone (a pink scene changing from launch to launch)
+        public static void ASured(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            (int handle, int cbufSlot) = ATexHandle(context, x);
+
+            if (cbufSlot != TextureOperation.DefaultCbufSlot)
+            {
+                throw AFail(context, $"SURED handle in bank {cbufSlot}");
+            }
+
+            EmitSured(context, (SuDim)x.Bits(61, 64), 0, (RedOp)x.Bits(87, 90), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, false, isBindless: false);
         }
 
         // BAR.SYNC: the workgroup barrier

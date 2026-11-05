@@ -63,7 +63,7 @@ static void run3d(uint64_t serial, uint32_t tex_flags, int want) {
     nvn_tex_layout(&t.d,&t.L);
     uint8_t linear[4*4*4*4];for(int z=0;z<4;z++)for(int i=0;i<16;i++){uint8_t *p=linear+(z*16+i)*4;p[0]=z*40+1;p[1]=z*40+2;p[2]=z*40+3;p[3]=255;}
     CHECK("3D fixture swizzle succeeds",!nvn_swizzle(&t.d,0,0,linear,16,mem));
-    CHECK(want?"an uncompressed 3D texture with no IMAGE flag is taken from its storage":"a 3D image keeps its GPU content",tex_cpu_content(&t)==want);
+    CHECK(want?"an uncompressed 3D texture with no IMAGE flag is taken from its storage":"a 3D image keeps its GPU content",tex_cpu_content(&t, 0)==want);
     mtl_tex_init(&t);mtl_sub_begin();id<MTLTexture> image=tex_mtl(&t);
     CHECK("3D texture resolves",image!=nil);finish();
     if(want&&image){

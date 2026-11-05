@@ -95,3 +95,5 @@ HLE_FORCE("_ZN2nn2sf4hipc15SendSyncRequestENS_3svc6HandleEPvm", "send a request 
     uint32_t *o = (uint32_t *)(base + out); o[0] = 0x4f434653; o[1] = ver; o[2] = RES_OK; o[3] = 0;   // "SFCO"; a domain's out-object count before it stays 0
     return RES_OK;
 }
+// A host session for a service a game reaches through its own handle (the Switch 2 camera context, hle_misc.c): every request succeeds with zeroed output
+uint32_t dm_sf_open(const char *name) { uint32_t h = sf_new(name, 0); LOG("sf: %s → host session %#x (every request succeeds with zeroed output)", name, h); return h; }

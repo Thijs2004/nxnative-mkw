@@ -1,0 +1,54 @@
+# Mario Kart World (Switch 2, update v917504). In bring-up
+# Nintendo EPD's engine (sead / agl / gsys), SDK 21.4.0 (Ounce), NVN2; modules main + subsdk0 + subsdk1 + sdk.
+# Packed from a dump folder (base/, updates/<version>/) with scripts/pack_dump.py. Shaders: Shader/*.Nin_Ounce_NVN2.bfsha.zs (BNSH with Ampere code).
+
+# ---- Identity ----
+title_id	0400C3F00006E000
+program_id	0400C3F00006E000
+
+# ---- App ----
+name	Mario Kart World
+ipa	MarioKartWorld.ipa
+app_category	public.app-category.racing-games
+pad_layout	simple
+# handheld: the Switch 2 handheld renders at most 1080p, a quarter of docked 4K's render target memory (the iPhone's budget)
+op_mode	handheld
+
+# ---- Versions ----
+build	v917504	v917504	main=d00e4f399e411d0613aa8d26b1c02fef	subsdk0=746302f49f095cfca3d2188423c2bd77	subsdk1=8dec9c0b1bed821364e77b10a07b9a28	sdk=7a68b13d88183767fb9c7babffe89f3d
+package	v917504
+shader_versions	v917504
+
+# ---- Files ----
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	System/BancFixFileList.byml
+zip_store	.zs:.bwav:.webm:.metallib
+
+# ---- Memory ----
+# HeapDef Product: 6.44 GB of heaps in a 7.04 GB root block (AllocateMemoryBlock at main+0xbeb454)
+mem_reserve	0x340000000
+mem_alias	0x98000000
+mem_stack	0x10000000
+app_pool	0x260000000
+# MKW's NinVirtualAddressHeap (main+0x681134) reports as its free size what the system reports free (QueryMemoryInfo total - used). Without the limit the host left the alias
+# region's mapped pages out of the used memory, so the heap never let blocks go: 2.4 GB mapped by the fourth race instead of ~1.2 GB (kartnative 82138ff). Fewer GB = less swap on a
+# 16 GB Mac and less compression on the iPhone
+mem_map_limit	on
+
+# ---- Shader split (shader_split.py) ----
+shader_groups	/Shader/=shader /Effect/=effect /Layout/=layout /UI/=layout
+shader_note	Mario Kart World shaders
+
+# ---- Graphics ----
+# NVN2: main+0xdd0890 requires API major 231 and minor >= 39, else it creates no device (null singleton at main+0x69c020)
+device_api	231.39
+render_cond	on
+# 0: the game paces itself. Its frame-step page (patches.py) only carries the render scale; a target would make the host hold presents in whole vsyncs, which no stub of this game follows
+fps_target	0
+# the iPhone's render scale default: 0.65 = 1248x702 of the handheld 1920x1080 (the slider's steps are 0.05); the Mac keeps 1.0
+render_scale_ios	0.65
+# Textures the CPU fills after creating them without an NVN flush (EPD engine, as Tears of the Kingdom): without both keys they stayed GPU textures of zeros, which ASTC
+# decodes as the error colour, and the world had a magenta cast
+tex_flush_upload	on
+tex_dirty_upload	on
+enc_thread_ios	off

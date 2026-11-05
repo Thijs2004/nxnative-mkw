@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <mach/mach_time.h>
 #include <sched.h>
+#include <string.h>
 
 // Order of page state and mprotect: the side changing protection first sets the state to BUSY and sets the final state only after mprotect has landed; other threads wait when they see BUSY.
 //   set read-only: NONE -> BUSY -> mprotect(read-only) -> PROT; unprotect: PROT -> BUSY -> mprotect(writable) -> NONE.
@@ -27,7 +28,8 @@ enum { BLK_SHIFT = 10, BLK = 1 << BLK_SHIFT, NBLK = 256, MAX_RANGE = BLK * NBLK 
 // Ranges are rounded to host pages (16 KB) but guest memory pools are only 4 KB aligned: adjacent pools share their first / last pages, so one address can fall in several registered ranges.
 // So: "is this texture tracked" looks for a range that holds its whole span; a fault / host pre-write unprotects and stamps every range covering that page; pool destruction identifies its range by the pool's exact start mem.
 // (Previously the first range containing the address was always taken: two SMBW ASTC 6x5 textures whose pool's first page is shared with a small preceding pool were judged untracked and re-uploaded on every use, about 6 MB per frame)
-typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; } range_t;
+// last: the newest generation of any page of the range (0 = none written since registration), so a range nobody wrote since a stamp answers without its pages (kartnative cf0344bb)
+typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t last; } range_t;
 static _Atomic(range_t *) g_blk[NBLK];
 static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_SHIFT], memory_order_acquire)[i & (BLK - 1)]; }
 static _Atomic int g_nr;
@@ -68,13 +70,17 @@ static range_t *find_span(uintptr_t a, size_t len) {
     return NULL;
 }
 static void stamp_page(range_t *r, uintptr_t p) {
-    atomic_store(&r->gen[p], atomic_fetch_add(&g_now, 1) + 1);
+    uint64_t g = atomic_fetch_add(&g_now, 1) + 1;
+    uint64_t l = atomic_load(&r->last); while (l < g && !atomic_compare_exchange_weak(&r->last, &l, g)) {}   // a maximum, stored before the page's generation: a checker never sees a page newer than its range
+    atomic_store(&r->gen[p], g);
     // Publish completion after the generation: a checker may have cached "clean" using the incremented clock before the generation store. Both fault and host-write paths
     // must invalidate that cached clock, as the page stays writable until the next upload protects it again.
     atomic_fetch_add(&g_now, 1);
 }
+static _Atomic int g_rel_any;   // a page has been given back (nvn_dirty_release): unprotecting then also takes it back from the system
 static void unprotect_page(range_t *r, uintptr_t p) {   // The caller has already changed the state from PROT to BUSY
     mp(r->base + (p << g_shift), g_pg, PROT_READ | PROT_WRITE);
+    if (atomic_load_explicit(&g_rel_any, memory_order_relaxed)) madvise((void *)(r->base + (p << g_shift)), g_pg, MADV_FREE_REUSE);   // a page given back is the game's again before it writes
     stamp_page(r, p);
     atomic_store(&r->state[p], PG_NONE);
 }
@@ -105,6 +111,7 @@ static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t
         if (took) { if (!open) { run = i; open = 1; } continue; }
         if (open) {
             mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ | PROT_WRITE);
+            if (atomic_load_explicit(&g_rel_any, memory_order_relaxed)) madvise((void *)(r->base + (run << g_shift)), (i - run) << g_shift, MADV_FREE_REUSE);   // as in unprotect_page
             for (uintptr_t k = run; k < i; k++) { stamp_page(r, k); atomic_store(&r->state[k], PG_NONE); }
             if (count) atomic_fetch_add(count, i - run);
             open = 0;
@@ -157,7 +164,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     } else {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen);
     }
-    r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen;
+    r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen; atomic_store(&r->last, 0);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
@@ -198,14 +205,32 @@ void nvn_dirty_protect(const void *addr, size_t len) {
     pthread_mutex_unlock(&g_slot_mu);
 }
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }
-int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp) {
-    if (!len) return 0;
-    range_t *r = (range_t *)span; uintptr_t a0 = (uintptr_t)addr;   // the kept handle still holds the span (a slot reused by another pool over the same memory is as good): no scan
-    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a0 < r->base || a0 + len > r->end) r = find_span(a0, len);
+// Whether a kept handle (nvn_dirty_span) still names a live range holding [addr, addr+len)
+int nvn_dirty_span_covers(const void *span, const void *addr, size_t len) {
+    const range_t *r = span; uintptr_t a = (uintptr_t)addr;
+    return r && atomic_load_explicit(&r->live, memory_order_acquire) && a >= r->base && a + len <= r->end;
+}
+static int since(range_t *r, uintptr_t a, size_t len, uint64_t stamp) {
     if (!r) return 1;   // When untracked, conservatively treat as dirty: better to upload more than to show stale content
-    uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
+    if (atomic_load(&r->last) <= stamp) return 0;   // no page of the range written since
+    uintptr_t p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     for (uintptr_t i = p; i <= q; i++) if (atomic_load(&r->gen[i]) > stamp) return 1;   // The generation of the last write before upload is <= the stamp; any later write must be > the stamp
     return 0;
+}
+static range_t *kept(const void *span, uintptr_t a0, size_t len) {   // the kept handle still holds the span (a slot reused by another pool over the same memory is as good): no scan
+    range_t *r = (range_t *)span;
+    return r && atomic_load_explicit(&r->live, memory_order_acquire) && a0 >= r->base && a0 + len <= r->end ? r : find_span(a0, len);
+}
+int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp) { return len ? since(kept(span, (uintptr_t)addr, len), (uintptr_t)addr, len, stamp) : 0; }
+int nvn_dirty_since_keep(const void **span, const void *addr, size_t len, uint64_t stamp) {
+    if (!len) return 0;
+    range_t *r = kept(*span, (uintptr_t)addr, len); if (r) *span = r;
+    return since(r, (uintptr_t)addr, len, stamp);
+}
+// Whether any page of a kept range was written since the stamp (its newest generation), without its pages; a range no longer live counts as written
+int nvn_dirty_range_since(const void *span, uint64_t stamp) {
+    range_t *r = (range_t *)span;
+    return !r || !atomic_load_explicit(&r->live, memory_order_acquire) || atomic_load(&r->last) > stamp;
 }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { return nvn_dirty_since_span(NULL, addr, len, stamp); }
 void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total) {
@@ -218,3 +243,67 @@ void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     *calls = atomic_load(&g_mp_calls); *pages = atomic_load(&g_mp_pages); *ns = atomic_load(&g_mp_ticks) * tb.numer / tb.denom;
 }
+
+// Give back the memory of the whole host pages of [addr, addr+len) whose bytes the host now keeps elsewhere (a sparse texture's tile on the GPU; expect: those bytes, len long). After Plumber
+// Racer 2's nvn_dirty_release. Only pages still protected since the upload are given (one the game wrote since holds what the host has not taken yet), only those of a single tracked range
+// (a page shared by two pools is left), and none of the guest memory file (dm_guest_file_at: the file's pages, not the process's). The page is BUSY meanwhile, so a fault waits; it is
+// writable only for madvise (which refuses read-only pages) and read-only again before it is looked at: a byte that changed in between was a game write, which keeps the page and dirties it
+// as a fault would, or the system taking the page at once (all zeros), which gets the host's copy back. The memory goes at the system's next need: until then the page reads as before.
+// A write later faults (it is read-only) and takes the page back (MADV_FREE_REUSE, unprotect_page)
+static _Atomic uint64_t g_released, g_rel_file;
+__attribute__((weak)) int dm_guest_file_at(const void *p, size_t n) { (void)p; (void)n; return 0; }
+size_t nvn_dirty_release(const void *addr, size_t len, const void *expect) {
+    uintptr_t a = (uintptr_t)addr, lo = (a + g_pg - 1) & ~(g_pg - 1), hi = (a + len) & ~(g_pg - 1); size_t freed = 0;
+    if (!g_pg || !expect || hi <= lo) return 0;
+    if (dm_guest_file_at(addr, len)) { atomic_fetch_add(&g_rel_file, len); return 0; }
+    atomic_store(&g_rel_any, 1);
+    pthread_mutex_lock(&g_slot_mu);   // ranges stay live meanwhile (nvn_dirty_remove_range restores them writable under the same lock)
+    for (uintptr_t pa = lo; pa < hi; pa += g_pg) {
+        range_t *r = NULL; int n = atomic_load(&g_nr), cover = 0;
+        for (int i = 0; i < n; i++) { range_t *x = rg(i); if (live_at(i) && pa >= x->base && pa < x->end) { r = x; cover++; } }
+        if (cover != 1 || pa + g_pg > r->end) continue;
+        uintptr_t p = (pa - r->base) >> g_shift; uint8_t st = PG_PROT;
+        if (!atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) continue;
+        const uint8_t *e = (const uint8_t *)expect + (pa - a);
+        if (memcmp((const void *)pa, e, g_pg)) { atomic_store(&r->state[p], PG_PROT); continue; }   // not the bytes the host keeps: left alone
+        mp(pa, g_pg, PROT_READ | PROT_WRITE); madvise((void *)pa, g_pg, MADV_FREE_REUSABLE); mp(pa, g_pg, PROT_READ);
+        if (memcmp((const void *)pa, e, g_pg)) {
+            int zero = 1; for (size_t k = 0; k < g_pg && zero; k += 8) zero = !*(const uint64_t *)(pa + k);
+            mp(pa, g_pg, PROT_READ | PROT_WRITE); madvise((void *)pa, g_pg, MADV_FREE_REUSE);
+            if (zero) { memcpy((void *)pa, e, g_pg); mp(pa, g_pg, PROT_READ); atomic_store(&r->state[p], PG_PROT); }
+            else { stamp_page(r, p); atomic_store(&r->state[p], PG_NONE); }
+            continue;
+        }
+        atomic_store(&r->state[p], PG_PROT); freed += g_pg;
+    }
+    pthread_mutex_unlock(&g_slot_mu);
+    atomic_fetch_add(&g_released, freed);
+    return freed;
+}
+void nvn_dirty_released(uint64_t *given, uint64_t *in_file) { *given = atomic_load(&g_released); *in_file = atomic_load(&g_rel_file); }
+
+// Mark the whole host pages of [addr, addr+len) cold (a packaged texture's storage once the GPU holds its copy: nvn_mtl.m tex_drop). Only pages of the guest memory file, still
+// protected since the upload (the game has not written them), of the one range that holds the span, not its first or last page (shared with a neighbouring pool). Their bytes stay:
+// the system pages them out first (dm_guest_file_cold), and a later read gets them back. Nothing is lost, so no texture made again over the same storage can read zeros (magenta)
+static _Atomic uint64_t g_dropped;
+int dm_guest_file_cold(const void *p, size_t n);
+__attribute__((weak)) int dm_guest_file_cold(const void *p, size_t n) { (void)p; (void)n; return 0; }
+size_t nvn_dirty_drop(const void *addr, size_t len) {
+    uintptr_t a = (uintptr_t)addr, lo = (a + g_pg - 1) & ~(g_pg - 1), hi = (a + len) & ~(g_pg - 1); size_t freed = 0;
+    if (!g_pg || hi <= lo || !dm_guest_file_at((const void *)lo, hi - lo)) return 0;
+    pthread_mutex_lock(&g_slot_mu);
+    range_t *r = find_span(a, len);
+    if (r) {
+        uintptr_t s = lo > r->base + g_pg ? lo : r->base + g_pg, e = hi < r->end - g_pg ? hi : r->end - g_pg;
+        uintptr_t p0 = (s - r->base) >> g_shift, p1 = e > s ? (e - r->base) >> g_shift : p0;   // pages [p0, p1)
+        for (uintptr_t p = p0; p < p1; ) {
+            uintptr_t q = p; while (q < p1 && atomic_load(&r->state[q]) == PG_PROT) q++;
+            if (q > p) { uintptr_t ra = r->base + (p << g_shift); size_t rn = (q - p) << g_shift; if (dm_guest_file_cold((const void *)ra, rn)) freed += rn; }
+            p = q + 1;   // q: written since the upload (hot): left alone
+        }
+    }
+    pthread_mutex_unlock(&g_slot_mu);
+    atomic_fetch_add(&g_dropped, freed);
+    return freed;
+}
+uint64_t nvn_dirty_dropped(void) { return atomic_load(&g_dropped); }

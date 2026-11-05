@@ -48,7 +48,12 @@ static UILabel *front_ios_fps_label(void);
 - (void)layoutSubviews {
     [super layoutSubviews];
     CAMetalLayer *l = (CAMetalLayer *)self.layer;
-    l.drawableSize = CGSizeMake(self.bounds.size.width * l.contentsScale, self.bounds.size.height * l.contentsScale);
+    // At most DM_DISPLAY_MAX_W pixels wide (default 1920, 0 = the screen's own pixels): the game draws 1920x1080 in handheld, so a larger drawable (2346x1320 on a 16 Pro Max)
+    // only costs the present's upscale and its memory; the system's compositor stretches the layer to the screen
+    static double maxw = -1; if (maxw < 0) { const char *e = getenv("DM_DISPLAY_MAX_W"); maxw = e && *e ? atof(e) : 1920; }
+    CGFloat w = self.bounds.size.width * l.contentsScale, h = self.bounds.size.height * l.contentsScale;
+    if (maxw > 0 && w > maxw) { h = h * maxw / w; w = maxw; }
+    l.drawableSize = CGSizeMake(w, h);
 }
 @end
 static CGRect fit_16_9(CGRect b) {   // the largest centered 16:9 rectangle in b

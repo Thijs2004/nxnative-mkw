@@ -76,7 +76,7 @@ def sph_stage(code):
     if len(code) < 0x34: return None   # shorter than the header and SPH word 0
     w = struct.unpack_from('<I', code, 0x30)[0]
     return 'vs' if (w >> 10) & 0xf == 0 and w & 0x1f == 1 else SPH_STAGE.get((w >> 10) & 0xf)
-STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute'}   # shader_map.tsv column 3
+STAGE_NAME = {'vs': 'vertex', 'hs': 'hull', 'ds': 'domain', 'gs': 'geometry', 'ps': 'pixel', 'cs': 'compute', 'ts': 'task', 'ms': 'mesh'}   # shader_map.tsv column 3 (task / mesh: NVN2's, as Metal object / mesh functions)
 
 def red(msg): sys.exit('[RED] ' + msg)
 
@@ -161,7 +161,9 @@ def bnsh_shaders(d, base, label):
     return out
 
 def nvn2_stage(ctl, code):   # an NVN2 shader's stage: compute by the control section's stage byte (+0x56: 5), else the SPH at the code area's start (no code header)
-    if len(ctl) > 0x56 and ctl[0x56] == 5: return 'cs'
+    # task (6) and mesh (7) shaders count as compute: the host runs them as compute dispatches for its mesh draw emulation (dmsh_build.py job_for, nvn_mtl.m mesh_draw);
+    # their SPH says vertex or domain (Mario Kart World's DrivePassShader mesh shaders were split as domain shaders)
+    if len(ctl) > 0x56 and ctl[0x56] in (5, 6, 7): return 'cs'
     return sph_stage(bytes(0x30) + code[:4]) if len(code) >= 4 else None
 
 def bahs_shaders(d, label):
@@ -2780,6 +2782,20 @@ def main():
                 continue
             keys[key] = v; per_src[group(v[0])] += 1
     prog = {(a, b) for a, b, *t in pairs if t} - pairs; pairs = {x for x in pairs if len(x) == 2}
+    # NVN2 mesh shaders: the vertex shader of the host's mesh draw emulation (dmsh_nvn2mesh.py), a vertex shader of key mesh key ^ 0x5a5a5a5a5a5a5a5a, paired with the mesh shader's pixel shaders
+    import dmsh_nvn2mesh
+    for key, (where, st, ctl, code) in sorted(keys.items()):
+        if st != 'cs' or not dmsh_nvn2mesh.is_mesh(ctl): continue
+        r = dmsh_nvn2mesh.vs_record(ctl, code)
+        if not r: print(f'[RED] mesh shader {key}: its output does not fit the mesh draw windows (dmsh_nvn2mesh.py fits), no vertex shader for it ({where})', flush=True); continue
+        vk = dmsh_nvn2mesh.vs_key(key); keys.setdefault(vk, (where + '#meshvs', 'vs', *r))
+        pairs |= {(vk, b) for a, b in pairs if a == key}; prog |= {(vk, b) for a, b in prog if a == key}
+    # NVN2 task / mesh shaders again as Metal object / mesh functions (dmsh_meshstage.py, after Plumber Racer 2): a task / mesh record of key ^ dmsh_meshstage.KEY_XOR. The host draws a mesh
+    # program through a mesh pipeline when all its stages have such a library and keeps the emulation above otherwise (nvn_mtl.m mesh_native)
+    import dmsh_meshstage
+    for key, (where, st, ctl, code) in sorted(keys.items()):
+        if st != 'cs' or not nvn2_ctl(ctl) or len(ctl) <= 0x56 or ctl[0x56] not in (6, 7): continue
+        keys.setdefault(dmsh_meshstage.native_key(key), (where + '#native', dmsh_meshstage.STAGE[ctl[0x56]], ctl, code))
     sp, cover = separable_pairs(keys); pairs |= sp
     if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
     os.makedirs(pkg, exist_ok=True)
@@ -2793,10 +2809,15 @@ def main():
         if rec.find(CTL_MAGIC) != 0x38 + len(code): red(f'key {key}: the control magic appears in the code area, dmsh_build would split the record wrongly')
         if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
         rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
+        if st in ('ts', 'ms'):   # native task / mesh: the thread count in the low half of +0x58 (8 or 32), one dimension; their shared memory is the build's stage buffer (dmsh_meshstage.py)
+            x = struct.unpack_from('<H', ctl, 0x58)[0]
+            if not x: red(f'{STAGE_NAME[st]} shader {key}: control +0x58 thread count is 0 ({where})')
+            facts[key] = {'local': [x, 1, 1], 'shared': 0}
         if st == 'cs':
             # NVN2: the thread group at +0x58 (32 1 1 in Donkey Kong Bananza's effects); shared memory taken from +0x64, not yet seen nonzero (unverified)
             at = (0x58, 0x64) if nvn2_ctl(ctl) else (0x748, 0x754)
             x, y, z = struct.unpack_from('<3I', ctl, at[0]); sh = struct.unpack_from('<I', ctl, at[1])[0]
+            if nvn2_ctl(ctl) and ctl[0x56] in (6, 7): x, y, z = x & 0xffff, 1, 1   # task / mesh: the thread count in the low half of +0x58 (Mario Kart World: 8 or 32; the rest is not a thread group)
             if not x * y * z: red(f'compute shader {key}: control +{at[0]:#x} thread group is 0 ({where})')
             facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
     for name, rr in recs.items():

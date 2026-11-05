@@ -9,6 +9,8 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <mach/mach.h>
+#include <fcntl.h>
+#include <TargetConditionals.h>
 
 // Reserve one whole block of guest address space, partitioned the Horizon way (address values are the real addresses returned by the host's mmap).
 // It only takes address space, not memory.
@@ -39,6 +41,90 @@ int dm_guest_as_contains(uintptr_t a) { uintptr_t b = (uintptr_t)g_as; return g_
 
 static void *alias_windows_thread(void *arg);
 static void *regions_thread(void *arg);
+// Donor memory (dm/ios/Sources/ram_donor.m defines the real one on iOS); the Mac host has none
+__attribute__((weak)) size_t dm_ram_donor_take(void *target, size_t n) { (void)target; (void)n; return 0; }
+static uintptr_t g_donor_lo, g_donor_hi;   // the heap range that is donor memory (outside the app's memory limit)
+// Guest memory backed by a file (DM_GUEST_SWAP, iPhone default 1): the alias region and the heap are shared mappings of a sparse file in the temporary folder (DM_SWAP_DIR). iOS has
+// no swap and compresses anonymous memory only: Mario Kart World touches about 5.5 GB of guest memory, the compressor held 5 GB of it at the race start and the phone ran out. File
+// pages the system can write out and read back, and they are not in the app's footprint. Released guest memory punches a hole in the file (swap_release), so the file holds only what
+// the game uses. The donor memory (ram_donor.m) is the fallback when the file cannot be made
+enum { SWAP_MAX = 18 };
+static int g_swap_fd = -1; static uintptr_t g_swap_lo[SWAP_MAX], g_swap_hi[SWAP_MAX]; static uint64_t g_swap_off[SWAP_MAX]; static int g_nswap;   // mapped ranges and their file offsets
+static int swap_map(uint8_t *const lo[2], const size_t n[2]) {
+    // 1: the alias region and the heap; 2 (iPhone default): the alias region only (where Mario Kart World loads a course: 1 GB at the race start), the heap stays anonymous memory
+    // and the donors' (the system compresses it in memory). With both in the file the phone kept only ~1.3 GB of it resident and read the rest back all the time: 7-15 fps
+    const char *e = getenv("DM_GUEST_SWAP"); int on = e && *e ? atoi(e) : (TARGET_OS_IPHONE ? 2 : 0); if (!on) return 0;
+    int nmap = on == 2 ? 1 : 2;
+    const char *dir = getenv("DM_SWAP_DIR"); if (!dir || !*dir) dir = getenv("TMPDIR"); if (!dir || !*dir) dir = "/tmp";
+    char path[1024]; snprintf(path, sizeof path, "%s/guest-memory.swap", dir);
+    unlink(path);
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { LOG("[RED] guest memory file %s: cannot create (errno %d): anonymous memory instead", path, errno); return 0; }
+    unlink(path);   // gone when the app ends; the open file keeps it
+    if (ftruncate(fd, (off_t)(n[0] + (nmap > 1 ? n[1] : 0)))) { LOG("[RED] guest memory file: cannot size it to %.2f GB (errno %d)", (n[0] + n[1]) / 1073741824.0, errno); close(fd); return 0; }
+    uint64_t off = 0;
+    for (int k = 0; k < nmap; k++) {
+        if (mmap(lo[k], n[k], PROT_NONE, MAP_SHARED | MAP_FIXED, fd, (off_t)off) == MAP_FAILED) {
+            LOG("[RED] guest memory file: mapping %d failed (errno %d): anonymous memory instead", k, errno);
+            for (int j = 0; j <= k; j++) mmap(lo[j], n[j], PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+            close(fd); return 0;
+        }
+        g_swap_lo[k] = (uintptr_t)lo[k]; g_swap_hi[k] = (uintptr_t)lo[k] + n[k]; g_swap_off[k] = off; off += n[k];
+    }
+    g_swap_fd = fd; g_nswap = nmap;
+    // mode 2: heap ranges in the file too (DM_SWAP_HEAP = <offset>+<bytes>[,..] in hex, from the heap start): the game's large GPU memory pools, mostly texture storage the GPU has
+    // copied (cold; Mario Kart World's sit at fixed heap offsets: 2.4 GB at +0x5b0f9000). The rest of the heap stays anonymous memory and the donors' (hot, compressed in memory)
+    const char *hr = getenv("DM_SWAP_HEAP"); size_t pg = (size_t)getpagesize(); uint64_t hb = 0;
+    while (nmap == 1 && hr && *hr && g_nswap < SWAP_MAX) {
+        char *end; uint64_t o = strtoull(hr, &end, 16), len = 0; if (*end == '+') len = strtoull(end + 1, &end, 16);
+        uint64_t a = (o + pg - 1) & ~(uint64_t)(pg - 1), b = (o + len) & ~(uint64_t)(pg - 1);
+        if (b > a && b <= n[1] && mmap(lo[1] + a, b - a, PROT_NONE, MAP_SHARED | MAP_FIXED, fd, (off_t)off) != MAP_FAILED && !ftruncate(fd, (off_t)(off + (b - a)))) {
+            g_swap_lo[g_nswap] = (uintptr_t)lo[1] + a; g_swap_hi[g_nswap] = (uintptr_t)lo[1] + b; g_swap_off[g_nswap] = off; off += b - a; g_nswap++; hb += b - a; }
+        else LOG("[RED] guest memory file: heap range %s not mapped (errno %d)", hr, errno);
+        hr = strchr(end, ','); if (hr) hr++;
+    }
+    if (hb) LOG("[mem] guest memory file: also %.2f GB of the heap in %d ranges (DM_SWAP_HEAP: the large GPU memory pools)", hb / 1073741824.0, g_nswap - 1);
+    LOG("[mem] guest memory backed by a file in %s, the system can page it out: alias region %.2f GB%s (DM_GUEST_SWAP=0 none, 1 alias region and heap, 2 alias region only)", dir, n[0] / 1073741824.0,
+        nmap > 1 ? " and heap" : "; the heap is anonymous memory and the donors'");
+    return nmap;
+}
+// Whether [p, p+n) touches the guest memory file: such pages are the file's, written out and read back by the system, so there is nothing of the process's to give back (nvn_dirty_release)
+// The profile's mem_map_limit, overridable with DM_MEM_MAP_LIMIT=0 / 1 (an A/B: with it the game sees the alias region's mapped pages as used memory and may stream less)
+static int mem_map_limit(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_MEM_MAP_LIMIT"); v = e && *e ? atoi(e) != 0 : DM_GAME_MEM_MAP_LIMIT; } return v; }
+int dm_guest_file_at(const void *p, size_t n) {
+    uintptr_t a = (uintptr_t)p, b = a + n;
+    for (int k = 0; k < g_nswap; k++) if (a < g_swap_hi[k] && b > g_swap_lo[k]) return 1;
+    return 0;
+}
+// Drop the file's pages under [p, p+n) (whole host pages inside one range): F_PUNCHHOLE frees them at once, with no write-back of dirty pages to flash; they read 0 afterwards and a
+// write takes a fresh page (nvn_dirty_drop: texture storage whose bytes the GPU keeps). 1 = dropped
+int dm_guest_file_punch(const void *p, size_t n) {
+    uintptr_t a = (uintptr_t)p, b = a + n;
+    for (int k = 0; k < g_nswap; k++) if (a >= g_swap_lo[k] && b <= g_swap_hi[k]) {
+        fpunchhole_t ph = {0}; ph.fp_offset = (off_t)(g_swap_off[k] + (a - g_swap_lo[k])); ph.fp_length = (off_t)n;
+        return fcntl(g_swap_fd, F_PUNCHHOLE, &ph) == 0;
+    }
+    return 0;
+}
+// Mark the file's pages under [p, p+n) cold (whole host pages inside one range): MADV_DONTNEED deactivates them, so the system takes them first when it needs memory, without
+// losing their bytes (the file keeps them; a later read pages them back in). nvn_dirty_drop: texture storage whose bytes the GPU holds. Punching them out of the file instead gave
+// magenta surfaces in several courses: other textures over the same memory read them again. 1 = marked
+int dm_guest_file_cold(const void *p, size_t n) {
+    uintptr_t a = (uintptr_t)p, b = a + n;
+    for (int k = 0; k < g_nswap; k++) if (a >= g_swap_lo[k] && b <= g_swap_hi[k]) return madvise((void *)p, n, MADV_DONTNEED) == 0;
+    return 0;
+}
+// How much of each guest-memory-file range is in RAM (mincore), for the memory report (nvn_mtl.m mem_report): a range mostly out of RAM that the game reads pages in from flash
+void dm_swap_residency(char *out, size_t cap) {
+    size_t o = 0, pg = (size_t)getpagesize(); *out = 0;
+    for (int k = 0; k < g_nswap && o + 48 < cap; k++) {
+        size_t len = g_swap_hi[k] - g_swap_lo[k], np = len / pg, res = 0; char vec[4096];
+        for (size_t i = 0; i < np; i += sizeof vec) { size_t m = np - i < sizeof vec ? np - i : sizeof vec;
+            if (mincore((void *)(g_swap_lo[k] + i * pg), m * pg, vec)) break;
+            for (size_t j = 0; j < m; j++) res += vec[j] & 1; }
+        o += (size_t)snprintf(out + o, cap - o, "%s%s %llu/%llu MB", k ? "; " : "", k ? "heap" : "alias", (unsigned long long)(res * pg >> 20), (unsigned long long)(len >> 20));
+    }
+}
 static void mem_init_once(void) {
     size_t pg = (size_t)getpagesize();
     if (RESERVE < 0x10000000 || DM_GAME_MEM_ALIAS > RESERVE - 0x10000000 ||
@@ -64,6 +150,21 @@ static void mem_init_once(void) {
     if (!(g_alias_bits = calloc((g_alias_cap >> 18) + 1, sizeof *g_alias_bits))) die("alias region page bitmap calloc");
     if (!(g_alias_exposed = calloc(g_alias_cap / pg / 64 + 1, sizeof *g_alias_exposed))) die("alias exposure bitmap calloc");
     LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)g_reserve, g_heap, g_alias, g_stack);
+    // iOS: the start of the heap (where SetHeapSize opens it) becomes memory the donor extensions own (dm/ios/Sources/ram_donor.m), which the app's memory limit does not count.
+    // The remap leaves it read/write; it is closed again here, and SetHeapSize's mprotect opens it as for anonymous memory
+    uint8_t *const sl[2] = {g_alias, g_heap}; const size_t sn[2] = {g_alias_cap, g_heap_cap};
+    int swapped = swap_map(sl, sn);
+    {
+        size_t got = 0;   // the heap in the file (mode 1) needs no donors; heap ranges in the file (DM_SWAP_HEAP) are left out of the donor memory
+        if (swapped <= 1) { uintptr_t at = (uintptr_t)g_heap, end = (uintptr_t)g_heap + g_heap_cap;
+            while (at < end) { uintptr_t next = end, skip = 0;
+                for (int k = 1; k < g_nswap; k++) { if (g_swap_lo[k] <= at && g_swap_hi[k] > at) skip = g_swap_hi[k]; else if (g_swap_lo[k] > at && g_swap_lo[k] < next) next = g_swap_lo[k]; }
+                if (skip) { at = skip; continue; }
+                size_t t = dm_ram_donor_take((void *)at, next - at); got += t;
+                if (t) { mprotect((void *)at, t, PROT_NONE); g_donor_hi = at + t; }   // the remap leaves it read/write; SetHeapSize's mprotect opens it
+                if (t < next - at) break; at = next; } }
+        if (got) { g_donor_lo = (uintptr_t)g_heap; LOG("[mem] %.2f GB of the heap is donor memory (outside the app's memory limit)", got / 1073741824.0); }
+    }
     const char *aw = getenv("DM_ALIAS_WINDOWS");
     if (aw && atoi(aw) > 0) { pthread_t th; if (!pthread_create(&th, NULL, alias_windows_thread, (void *)(uintptr_t)atoi(aw))) pthread_detach(th); }
     const char *rf = getenv("DM_REGIONS");
@@ -188,7 +289,28 @@ static void alias_query(uint64_t addr, uint64_t *base, uint64_t *size, int *mapp
 // out of phys_footprint, and madvise(MADV_FREE) does nothing to pages that are not writable, though it returns 0 (1 GiB on the Mac: 1,024 MiB still resident and dirty; this: 0).
 // A memory pool's no-copy buffer over the range keeps the old pages for the GPU work still using it until the buffer goes. Returns 1 when the range now holds zero pages;
 // on failure the range is only inaccessible, with its old bytes
+static int guest_release(uintptr_t lo, uintptr_t hi);
+static int swap_release(int k, uintptr_t lo, uintptr_t hi) {   // zero pages and free their file blocks: punch a hole; the page cache over it goes with it
+    uintptr_t a = lo > g_swap_lo[k] ? lo : g_swap_lo[k], b = hi < g_swap_hi[k] ? hi : g_swap_hi[k];
+    fpunchhole_t ph; memset(&ph, 0, sizeof ph); ph.fp_offset = (off_t)(g_swap_off[k] + (a - g_swap_lo[k])); ph.fp_length = (off_t)(b - a);
+    if (fcntl(g_swap_fd, F_PUNCHHOLE, &ph)) { static int nr; if (nr++ < 4) LOG("[RED] guest memory file: punch hole %#lx+%#lx failed (errno %d): cleared by hand", (unsigned long)a, (unsigned long)(b - a), errno);
+        if (mprotect((void *)a, b - a, PROT_READ | PROT_WRITE) == 0) memset((void *)a, 0, b - a); }
+    if (mprotect((void *)a, b - a, PROT_NONE)) die("guest_release file mprotect %#lx+%#lx errno=%d", (unsigned long)a, (unsigned long)(b - a), errno);
+    if (lo < a) (void)guest_release(lo, a);
+    if (b < hi) (void)guest_release(b, hi);
+    return 1;
+}
 static int guest_release(uintptr_t lo, uintptr_t hi) {
+    for (int k = 0; k < g_nswap; k++) if (lo < g_swap_hi[k] && hi > g_swap_lo[k]) return swap_release(k, lo, hi);   // file-backed guest memory (swap_map)
+    // Donor memory stays mapped (a fresh anonymous mapping would put app-owned pages under the guest there): closed, its pages handed back to the donor's purgeable object
+    if (lo < g_donor_hi && hi > g_donor_lo) {
+        uintptr_t a = lo > g_donor_lo ? lo : g_donor_lo, b = hi < g_donor_hi ? hi : g_donor_hi;
+        (void)madvise((void *)a, b - a, MADV_FREE_REUSABLE);
+        if (mprotect((void *)a, b - a, PROT_NONE)) die("guest_release donor mprotect %#lx+%#lx errno=%d", (unsigned long)a, (unsigned long)(b - a), errno);
+        if (lo < a) (void)guest_release(lo, a);
+        if (b < hi) (void)guest_release(b, hi);
+        return 0;   // the donor part keeps its old bytes (MADV_FREE_REUSABLE may or may not have dropped them)
+    }
     if (mmap((void *)lo, hi - lo, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) != MAP_FAILED) return 1;
     static _Atomic int nred; if (atomic_fetch_add(&nred, 1) < 8) LOG("[RED] guest memory %#lx+%#lx not given back (errno %d): it stays resident", (unsigned long)lo, (unsigned long)(hi - lo), errno);
     if (mprotect((void *)lo, hi - lo, PROT_NONE)) die("guest_release mprotect %#lx+%#lx errno=%d", (unsigned long)lo, (unsigned long)(hi - lo), errno);
@@ -475,7 +597,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
             pthread_mutex_unlock(&g_map_lock); regs[0] = 0x10801; return 0;
         }
         uint64_t charged = (uint64_t)DM_GAME_MEM_USED + big_bss_bytes() + atomic_load(&g_alias_mapped);
-        if (DM_GAME_MEM_MAP_LIMIT && (charged > APP_POOL || size > APP_POOL - charged)) {
+        if (mem_map_limit() && (charged > APP_POOL || size > APP_POOL - charged)) {
             pthread_mutex_unlock(&g_map_lock); regs[0] = 0x10801; return 0;
         }
         int rc = 0;
@@ -619,7 +741,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // and maps new ones for later allocations, until a map fails: then it unmaps the cached block and retries (measured on the Mac: the refused 4 MB map at +0x43e2c000 was followed by
         // UnmapPhysicalMemory of the 3.15 GB block and the same map again). Without the limit the mapped total went past the pool in the first minute and the freed block stayed mapped.
         // Off by default: Ace Attorney Investigations Collection maps a little more than the 1 GB pool its profile reports
-        if (DM_GAME_MEM_MAP_LIMIT && num == 0x2C) {
+        if (mem_map_limit() && num == 0x2C) {
             int64_t room = (int64_t)APP_POOL - (int64_t)(g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes()) - atomic_load(&g_alias_mapped);
             if (need && need > room) {
                 pthread_mutex_unlock(&g_map_lock);
@@ -688,7 +810,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         case I_UsedMem:  case I_UsedNonSys:  pthread_mutex_lock(&g_map_lock);
                                              v = g_heap_cur + DM_GAME_MEM_USED + big_bss_bytes();   // profile mem_used, 64 MB unless the game needs more (see mem_used in dm/games/README.md)
                                              // with mem_map_limit, the pages mapped in the alias region count too, as on Horizon (the limit in MapPhysicalMemory is the pool less this)
-                                             if (DM_GAME_MEM_MAP_LIMIT) v += (uint64_t)atomic_load(&g_alias_mapped);
+                                             if (mem_map_limit()) v += (uint64_t)atomic_load(&g_alias_mapped);
                                              pthread_mutex_unlock(&g_map_lock); break;
         // the system resource the NPDM declares (profile sys_resource; 32 MB without the key). The SDK's IsVirtualAddressMemoryEnabled is "total != 0": Big Brain Academy's nninitStartup
         // asks StandardAllocator for 60 GB of virtual address memory when it is, and sets a heap only when it is not (its NPDM declares none)
