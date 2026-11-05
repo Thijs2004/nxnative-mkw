@@ -238,7 +238,8 @@ static void *boot_thread(void *p) {
     (void)p;
     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
     // guest heap memory from donor extensions before the host reserves the guest block (ram_donor.m; hle_svc.c maps it onto the heap). 7 GB unless DM_RAM_DONOR says otherwise
-    uint64_t dm_ram_donor_prepare(uint64_t want); dm_ram_donor_prepare(7ull << 30);
+    uint64_t dm_ram_donor_prepare(uint64_t want); uint64_t donated = dm_ram_donor_prepare(7ull << 30);
+    { char mb[32]; snprintf(mb, sizeof mb, "%llu", (unsigned long long)(donated >> 20)); setenv("DM_RAM_DONOR_MB", mb, 1); }   // hle_svc.c: the guest memory layout without a helper (DM_SWAP_HEAP_NOHELPER)
     int rc = dm_main(g_argc, g_argv);
     fprintf(stderr, "boot: dm_main returned %d\n", rc);
     return NULL;

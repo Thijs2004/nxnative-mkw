@@ -74,7 +74,11 @@ static int swap_map(uint8_t *const lo[2], const size_t n[2]) {
     g_swap_fd = fd; g_nswap = nmap;
     // mode 2: heap ranges in the file too (DM_SWAP_HEAP = <offset>+<bytes>[,..] in hex, from the heap start): the game's large GPU memory pools, mostly texture storage the GPU has
     // copied (cold; Mario Kart World's sit at fixed heap offsets: 2.4 GB at +0x5b0f9000). The rest of the heap stays anonymous memory and the donors' (hot, compressed in memory)
+    // Without the RAM helper (no donor extension, a free Apple account, LiveContainer: DM_RAM_DONOR_MB 0) the heap's memory counts against the app's own limit: the profile's
+    // DM_SWAP_HEAP_NOHELPER puts the heap chunks a race leaves cold in the file as well (a residency map of DM_SWAP_MAP), so the game keeps its room before the limit
     const char *hr = getenv("DM_SWAP_HEAP"); size_t pg = (size_t)getpagesize(); uint64_t hb = 0;
+    { const char *dn = getenv("DM_RAM_DONOR_MB"), *nh = getenv("DM_SWAP_HEAP_NOHELPER");
+      if (dn && !strtoull(dn, NULL, 10) && nh && *nh) { hr = nh; LOG("[mem] no RAM helper: the guest memory file takes the heap ranges of DM_SWAP_HEAP_NOHELPER"); } }
     while (nmap == 1 && hr && *hr && g_nswap < SWAP_MAX) {
         char *end; uint64_t o = strtoull(hr, &end, 16), len = 0; if (*end == '+') len = strtoull(end + 1, &end, 16);
         uint64_t a = (o + pg - 1) & ~(uint64_t)(pg - 1), b = (o + len) & ~(uint64_t)(pg - 1);
@@ -115,6 +119,23 @@ int dm_guest_file_cold(const void *p, size_t n) {
     return 0;
 }
 // How much of each guest-memory-file range is in RAM (mincore), for the memory report (nvn_mtl.m mem_report): a range mostly out of RAM that the game reads pages in from flash
+// The resident MB of each 64 MB chunk of the guest memory file's ranges of 256 MB and more (DM_SWAP_MAP=1, with the memory report): which parts of the heap the game keeps
+// hot and which the system pages out, to choose the heap ranges that can live in the file (DM_SWAP_HEAP) for a phone without the RAM helper
+void dm_swap_chunks(char *out, size_t cap) {
+    size_t o = 0, pg = (size_t)getpagesize(), ch = 64u << 20; *out = 0;
+    for (int k = 0; k < g_nswap && o + 64 < cap; k++) {
+        size_t len = g_swap_hi[k] - g_swap_lo[k]; if (len < (256u << 20)) continue;
+        o += (size_t)snprintf(out + o, cap - o, "%s%s +%#llx:", o ? " | " : "", k ? "heap" : "alias", (unsigned long long)(g_swap_lo[k] - (k ? g_swap_lo[k] : g_swap_lo[0])));
+        char vec[4096];
+        for (size_t c = 0; c < len && o + 8 < cap; c += ch) {
+            size_t n = (len - c < ch ? len - c : ch) / pg, res = 0;
+            for (size_t i = 0; i < n; i += sizeof vec) { size_t m = n - i < sizeof vec ? n - i : sizeof vec;
+                if (mincore((void *)(g_swap_lo[k] + c + i * pg), m * pg, vec)) break;
+                for (size_t j = 0; j < m; j++) res += vec[j] & 1; }
+            o += (size_t)snprintf(out + o, cap - o, " %zu", res * pg >> 20);
+        }
+    }
+}
 void dm_swap_residency(char *out, size_t cap) {
     size_t o = 0, pg = (size_t)getpagesize(); *out = 0;
     for (int k = 0; k < g_nswap && o + 48 < cap; k++) {

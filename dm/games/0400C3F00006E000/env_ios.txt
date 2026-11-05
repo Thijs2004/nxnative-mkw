@@ -3,3 +3,6 @@
 DM_SWAP_HEAP=0x3fefa000+0x11e00000,0x5b0f9000+0x94500000,0x13ddfe000+0xe900000,0x187a70000+0x8290000,0x18fd00000+0x20190000,0x1afe90000+0x8300000
 # the 30 fps lock keeps a 60 Hz display link (a 30 Hz link missed whole ticks: 66.7 ms frames)
 DM_LINK_30=0
+# without the RAM helper (free Apple account, LiveContainer): the ranges above plus the heap chunks a Mario Bros. Circuit race left cold (DM_SWAP_MAP, 2026-11-05),
+# merged; the hot chunks outside the GPU memory pools stay in normal memory (hle_svc.c picks this when DM_RAM_DONOR_MB is 0)
+DM_SWAP_HEAP_NOHELPER=0x0+0x4000000,0x18000000+0x8000000,0x28000000+0x4000000,0x38000000+0x19cfa000,0x58000000+0x975f9000,0x104000000+0x4000000,0x110000000+0xc000000,0x128000000+0x8000000,0x134000000+0x4000000,0x13ddfe000+0xe900000,0x164000000+0xc000000,0x178000000+0x4000000,0x187a70000+0x100590000

@@ -1981,6 +1981,8 @@ static void mem_report(const char *why) {
              (unsigned long long)(fp >> 20), (unsigned long long)(left >> 20), (unsigned long long)(vi.internal >> 20), (unsigned long long)(vi.compressed >> 20), (unsigned long long)(vi.external >> 20),
              (unsigned long long)(g_dev.currentAllocatedSize >> 20));
         if (nvn_dirty_dropped()) MLOG("[mem] %s: texture storage give-back: %llu MB of uploaded texture storage marked cold (DM_NVN_TEX_DROP)", why, (unsigned long long)(nvn_dirty_dropped() >> 20));
+        { static int sm = -1; if (sm < 0) { const char *e = getenv("DM_SWAP_MAP"); sm = e && atoi(e); }
+          if (sm) { void dm_swap_chunks(char *, size_t); static char ck[8192]; dm_swap_chunks(ck, sizeof ck); if (*ck) MLOG("[mem] %s: guest memory file resident MB per 64 MB:%s", why, ck); } }
         return;
     }
     uint64_t tex = 0, heap = 0, buf = 0, pools = 0, trt = 0, tcmp = 0, tpkg = 0; unsigned ntex = 0, nheap = 0, nbuf = 0, npool = 0;
