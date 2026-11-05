@@ -1,6 +1,6 @@
 # nxnative-mkw: install tutorial
 
-nxnative-mkw runs Mario Kart World with update v917504 on an iPhone or a Mac. This guide takes you from your own copy of the game to playing it on an iPhone: you build an app on a Mac, install it on the iPhone, and copy the game files across. To play on the Mac itself, which is simpler, follow Steps 1 to 3 and then [Playing on a Mac](#playing-on-a-mac).
+nxnative-mkw runs Mario Kart World version 1.8.0 (update v917504) on an iPhone or a Mac. This guide takes you from your own copy of the game to playing it on an iPhone: you build an app on a Mac, install it on the iPhone, and copy the game files across. To play on the Mac itself, which is simpler, follow Steps 1 to 3 and then [Playing on a Mac](#playing-on-a-mac).
 
 **This repository has no game files, keys or ready-made apps.** You need your own dump of the game and its update. The app and the `RomFS.img` file you make here contain your game, so keep them to yourself.
 
@@ -10,8 +10,8 @@ nxnative-mkw runs Mario Kart World with update v917504 on an iPhone or a Mac. Th
 
 | | |
 |---|---|
-| **The game** | Your own dump of Mario Kart World: the base game **plus update v917504** |
-| **A Mac** | Apple silicon, Xcode 27 (tested with Xcode 27.0), and about 60 GB free (22 GB for the dump, the rest for the build) |
+| **The game** | Your own dump of Mario Kart World: the base game **plus the 1.8.0 update (v917504)** |
+| **A Mac** | Apple silicon, Xcode 27 (tested with Xcode 27.0), and about 55 GB free for the iPhone app (22 GB dump, 23.5 GB `RomFS.img`, 6 GB shaders and build files), plus 23 GB if you also build the Mac app |
 | **An iPhone** | Tested on an iPhone 16 Pro Max, with about 30 GB free |
 | **A way to install apps** | A sideloading tool or developer account that can give the app the **Increased Memory Limit** and **Extended Virtual Addressing** entitlements |
 
@@ -22,7 +22,7 @@ Only this exact update works. The code patches are made for these modules, so an
 | | |
 |---|---|
 | Title ID | `0400C3F00006E000` |
-| Update | v917504 |
+| Update | 1.8.0 (v917504, `ResourceSizeTable.Product.180` in its RomFS) |
 | `main` build ID | `d00e4f399e411d0613aa8d26b1c02fef` |
 | `subsdk0` build ID | `746302f49f095cfca3d2188423c2bd77` |
 | `subsdk1` build ID | `8dec9c0b1bed821364e77b10a07b9a28` |
@@ -133,7 +133,9 @@ When it finishes, your game folder holds the two files you need:
 | File | Size | What it is |
 |---|---|---|
 | `MarioKartWorld.ipa` | about 670 MB | The app |
-| `0400C3F00006E000_build/extract/v917504/RomFS.img` | about 22 GB | The game files |
+| `0400C3F00006E000_build/extract/v917504/RomFS.img` | about 23.5 GB | The game files |
+
+Once `RomFS.img` is on the iPhone you can delete the Mac's copy, and move the dump to another drive. Keep the 6 GB of shaders in the build folder if you will build updates: they save the long first compile.
 
 The memory settings an 8 GB iPhone needs are built into the app ([`env_ios.txt`](dm/games/0400C3F00006E000/env_ios.txt)); you don't have to set anything.
 
@@ -150,7 +152,7 @@ Don't start the game yet.
 The game files go in the app's own **Documents** folder.
 
 1. Get `RomFS.img` onto the iPhone: a USB-C drive formatted as APFS or exFAT (FAT32 can't hold a file this big), AirDrop to the Files app, or Finder with the iPhone connected (select the iPhone, open the **Files** tab, and drag the file onto **Mario Kart World**).
-2. In the Files app, open **On My iPhone → Mario Kart World** and put `RomFS.img` there. If the file is already on the iPhone, use **Move** rather than **Copy**: a copy needs another 22 GB free.
+2. In the Files app, open **On My iPhone → Mario Kart World** and put `RomFS.img` there. If the file is already on the iPhone, use **Move** rather than **Copy**: a copy needs another 23.5 GB free.
 3. Wait for it to finish. Don't launch the game while the file is still arriving.
 4. Keep at least 5 GB free on top of that. While it runs, the game keeps part of its memory in a temporary file.
 

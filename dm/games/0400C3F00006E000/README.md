@@ -1,13 +1,13 @@
-# Mario Kart World (`0400C3F00006E000`), update v917504
+# Mario Kart World (`0400C3F00006E000`), version 1.8.0 (update v917504)
 
-A Switch 2 game, SDK 21.4.0 (`Ounce`), NVN2 API 231.39. Nintendo EPD's engine (sead / agl / gsys), modules `main`, `subsdk0`, `subsdk1` and `sdk`. **Runs on an iPhone 16 Pro Max (8 GB) and on a MacBook Air M4 (16 GB).** Nothing from the game is in this repository: you need your own dump of the base game and update v917504. The [install tutorial](../../../TUTORIAL.md) goes through every step.
+A Switch 2 game, SDK 21.4.0 (`Ounce`), NVN2 API 231.39. Nintendo EPD's engine (sead / agl / gsys), modules `main`, `subsdk0`, `subsdk1` and `sdk`. **Runs on an iPhone 16 Pro Max (8 GB) and on a MacBook Air M4 (16 GB).** Nothing from the game is in this repository: you need your own dump of the base game and the 1.8.0 update (v917504). The [install tutorial](../../../TUTORIAL.md) goes through every step.
 
 ## Required game version
 
 | | |
 |---|---|
 | Title ID | `0400C3F00006E000` |
-| Update | v917504 |
+| Update | 1.8.0 (v917504, `ResourceSizeTable.Product.180` in its RomFS) |
 | `main` build ID | `d00e4f399e411d0613aa8d26b1c02fef` |
 | `subsdk0` build ID | `746302f49f095cfca3d2188423c2bd77` |
 | `subsdk1` build ID | `8dec9c0b1bed821364e77b10a07b9a28` |
