@@ -13,7 +13,7 @@ nxnative-mkw runs Mario Kart World version 1.8.0 (update v917504) on an iPhone o
 | **The game** | Your own dump of Mario Kart World: the base game **plus the 1.8.0 update (v917504)** |
 | **A Mac** | Apple silicon, Xcode 27 (tested with Xcode 27.0), and about 55 GB free for the iPhone app (22 GB dump, 23.5 GB `RomFS.img`, 6 GB shaders and build files), plus 23 GB if you also build the Mac app |
 | **An iPhone** | Tested on an iPhone 16 Pro Max, with about 30 GB free |
-| **A way to install apps** | A paid developer account, or a free Apple account with SideStore (or LiveContainer) and [iRAM+](https://github.com/NexSideloading/iRAM-Plus) for the entitlements: see [Step 5](#step-5-install-the-app) |
+| **A way to install apps** | A paid developer account (best), or a free Apple account with SideStore and [iRAM+](https://github.com/NexSideloading/iRAM-Plus), or LiveContainer: see [Step 5](#step-5-install-the-app) for which is best |
 
 ## Step 1: Check your game version
 
@@ -141,26 +141,45 @@ The memory settings an 8 GB iPhone needs are built into the app ([`env_ios.txt`]
 
 ## Step 5: Install the app
 
-The app needs two entitlements: **Increased Memory Limit** and **Extended Virtual Addressing**. The game reserves about 13 GB of address space at start; without Extended Virtual Addressing an iPhone app gets far less, and the game closes at once. The IPA already asks for both ([`app.entitlements`](dm/games/0400C3F00006E000/app.entitlements)); your Apple account must allow them.
+The app needs the **Increased Memory Limit** entitlement. It also asks for **Extended Virtual Addressing** ([`app.entitlements`](dm/games/0400C3F00006E000/app.entitlements)); that one helps but is not required: on an iPhone 16 Pro Max with iOS 27 the game also starts without it.
 
-Pick one route:
+The app contains a small **RAM helper** (an app extension, the technique of MeloNX 2.7). It gives the game about 1.5 GB more room before iOS closes it. The game runs without it, but less smoothly, and it switches to a memory layout for that case by itself.
 
-**A. A paid Apple developer account** (Xcode, Sideloadly or any tool that signs with your team): enable both capabilities for the app's App ID and install the IPA.
+### The best ways, from best to least good
 
-**B. A free Apple account with SideStore** (no paid account needed):
+| | Route | Account | RAM helper | What to expect (iPhone 16 Pro Max, Medium preset) |
+|---|---|---|---|---|
+| **1** | Direct install, signed with a developer account | paid | yes | a steady 30 fps, 0 to 2 dropped frames per 300 |
+| **2** | SideStore, keeping the app extension | free | yes, if SideStore keeps it | the same as route 1 |
+| **3** | SideStore without the extension, or LiveContainer | free | no | about 28 to 30 fps, more dropped frames; use Medium or Low |
 
-1. Get SideStore on the iPhone. Without a computer, [SideInstaller](https://sideinstaller.net/) can install SideStore for you. Use it only for SideStore itself: the game must be signed with **your** Apple account, not with an enterprise certificate.
-2. Install `MarioKartWorld.ipa` with SideStore.
-3. Install [iRAM+](https://github.com/NexSideloading/iRAM-Plus), sign in with the same Apple account, select **Mario Kart World**, and add **Increased Memory Limit** and **Extended Virtual Addressing**.
-4. Reinstall `MarioKartWorld.ipa` through SideStore, so its new signature carries both entitlements.
+### Route 1: a paid developer account
+
+Enable **Increased Memory Limit** and **Extended Virtual Addressing** for the app's App ID (and an App ID for the extension, `<your app ID>.RamDonor`), sign the IPA with Xcode, Sideloadly or another tool that signs with your team, and install it.
+
+### Route 2: a free Apple account with SideStore (recommended for free accounts)
+
+1. Get SideStore on the iPhone. Without a computer, [SideInstaller](https://sideinstaller.net/) can install it for you. Use SideInstaller only for SideStore itself: the game must be signed with **your own** Apple account, not with an enterprise certificate.
+2. Install `MarioKartWorld.ipa` with SideStore. If SideStore asks whether to keep the app extension, keep it: the extension is the RAM helper. It takes a second App ID (a free account has 10 a week).
+3. Install [iRAM+](https://github.com/NexSideloading/iRAM-Plus), sign in with the same Apple account, select **Mario Kart World**, and add **Increased Memory Limit** (and **Extended Virtual Addressing**, if it offers it).
+4. Reinstall `MarioKartWorld.ipa` through SideStore, so its new signature carries the entitlements.
 
 A free account's apps must be refreshed in SideStore every 7 days.
 
-**C. LiveContainer:** apply iRAM+ to **LiveContainer itself** (it runs the game inside its own process, so the entitlements must be LiveContainer's), then install the IPA in LiveContainer.
+### Route 3: LiveContainer, or SideStore without the extension
 
-The app also contains a small helper extension that lends it extra memory where the system allows it. With a free account or in LiveContainer it may be left out or not start: the game runs without it (a race uses about 3.5 GB of the about 6 GB an 8 GB iPhone gives an app with Increased Memory Limit).
+LiveContainer runs the game inside its own process, so app extensions can't start there and the RAM helper is not used. Apply iRAM+ to **LiveContainer itself** (the entitlements must be LiveContainer's), then install the IPA in LiveContainer. Pick the **Medium** or **Low** preset.
 
-Routes B and C are untested so far; route A is how it was tested.
+### Check whether the RAM helper works
+
+After a first start, open `log.txt` in the app's Documents folder (Step 6 shows where):
+
+| The log says | Meaning |
+|---|---|
+| `ram donor: 7168 MB of 7168 MB from 3 donor(s)` | the helper works (routes 1 and 2) |
+| `no donor extension in this build` or `ram donor: cannot load the extension` | no helper (route 3); the next line says `no RAM helper: the guest memory file takes the heap ranges of DM_SWAP_HEAP_NOHELPER` |
+
+Routes 2 and 3 were tested by signing the app without the extension and without Extended Virtual Addressing, not with a real free account yet.
 
 Don't start the game yet.
 
@@ -217,7 +236,8 @@ The iPhone app writes a log to `log.txt` in its Documents folder, and keeps the 
 | The game doesn't start | Check that `RomFS.img` is directly in the app's Documents folder and has finished copying, and that it came from the same build as the app |
 | `is not the image this build needs` in the log | The file doesn't match this app. Copy over the `RomFS.img` from the same build as your IPA |
 | The game closes during a race | Restart the phone, free up storage (Step 6), and use the Medium or Low preset. Check that the app has the Increased Memory Limit entitlement |
-| The game closes at once, `reserve guest AS` in the log | The app has no Extended Virtual Addressing: add it (Step 5) and reinstall |
+| The game closes at once, `reserve guest AS` in the log | The phone gives the app too little address space: add Extended Virtual Addressing (Step 5) and reinstall |
+| It runs, but with more stutter than expected | Check whether the RAM helper works (Step 5); without it, use the Medium or Low preset, restart the phone before playing, and let it cool down |
 | Stutter that comes and goes | The phone is short of memory: restart it before playing, and let it cool down |
 | The build stops at the shaders | Read the message: with another Xcode than 27.0, add `--allow-other-metal` |
 | Wrong version or a crash at boot | Compare your build IDs with Step 1 |

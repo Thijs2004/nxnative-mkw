@@ -21,6 +21,7 @@ The patches ([`patches.py`](patches.py)) are made for these exact modules.
 |---|---|
 | Grand Prix, VS races | Play on iPhone and Mac |
 | Frame rate, iPhone 16 Pro Max | A steady 30 fps in races with the **Medium** preset (Locked 30, 65 % render scale, Medium textures), also with a warm phone. Runs are smoother right after a restart of the phone |
+| Frame rate without the RAM helper (free account, LiveContainer) | About 28 to 30 fps on the Medium or Low preset, more dropped frames: the game picks a memory layout with its cold heap parts in the guest memory file by itself (`DM_SWAP_HEAP_NOHELPER` in [`env_ios.txt`](env_ios.txt)) |
 | Frame rate, Mac (M4, 16 GB) | 60 fps |
 | Picture | Right in the races tested |
 | Online, local wireless, GameChat | Not available |
