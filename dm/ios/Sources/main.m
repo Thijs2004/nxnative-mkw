@@ -8,6 +8,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <mach/mach.h>
+#include <os/proc.h>
 #include "game_profile.h"   // game profile constants (the RomFS marker path)
 #include "front.h"
 #include "romfs_image.h"
@@ -234,10 +237,38 @@ static int boot_env(void) {
 }
 static int g_boot_ok;
 
+// Memory purge before the game loads: right after launch the phone's RAM still holds the apps used before, and the first start then plays with the game's own pages
+// compressed (2026-11-06 logs: 608 MB of the app compressed before the first frame, half the resident memory of a second start, 3-5x the long frames in a race; a
+// second start was smooth because the first had pushed the other apps out). Touching DM_MEM_PURGE_MB (default 4096, 0 = off) of incompressible memory once makes
+// the system compress and end those background apps now, then the memory is given back at once; stops 1.2 GB before the app's own limit
+static void sys_mem(uint64_t *free_mb, uint64_t *comp_mb) {
+    vm_statistics64_data_t v; mach_msg_type_number_t n = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&v, &n) != KERN_SUCCESS) { *free_mb = *comp_mb = 0; return; }
+    *free_mb = (uint64_t)v.free_count * vm_kernel_page_size >> 20; *comp_mb = (uint64_t)v.compressor_page_count * vm_kernel_page_size >> 20;
+}
+static void memory_purge(void) {
+    const char *e = getenv("DM_MEM_PURGE_MB"); long want = e ? atol(e) : 4096;
+    if (want <= 0) { fprintf(stderr, "boot: memory purge off (DM_MEM_PURGE_MB=0)\n"); return; }
+    uint64_t f0, c0, f1, c1; sys_mem(&f0, &c0);
+    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+    enum { CHUNK = 128 << 20 }; void *chunks[256]; int n = 0; uint64_t x = 0x9e3779b97f4a7c15ull ^ (uint64_t)t0.tv_nsec;
+    while (n < 256 && (long)n * 128 < want && os_proc_available_memory() > (size_t)1200 << 20) {
+        uint64_t *q = mmap(NULL, CHUNK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (q == MAP_FAILED) break;
+        for (size_t i = 0; i < CHUNK / 8; i++) { x ^= x << 13; x ^= x >> 7; x ^= x << 17; q[i] = x; }   // random: the compressor cannot shrink it, so RAM has to be freed
+        chunks[n++] = q;
+    }
+    for (int i = 0; i < n; i++) munmap(chunks[i], CHUNK);
+    clock_gettime(CLOCK_MONOTONIC, &t1); sys_mem(&f1, &c1);
+    fprintf(stderr, "boot: memory purge: %d MB touched in %.2f s; system free %llu -> %llu MB, compressed %llu -> %llu MB (DM_MEM_PURGE_MB)\n", n * 128,
+            (double)(t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9, f0, f1, c0, c1);
+}
+
 static void *boot_thread(void *p) {
     (void)p;
     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
     // guest heap memory from donor extensions before the host reserves the guest block (ram_donor.m; hle_svc.c maps it onto the heap). 7 GB unless DM_RAM_DONOR says otherwise
+    memory_purge();   // before the donors and the guest memory: free RAM the apps used before the game took
     uint64_t dm_ram_donor_prepare(uint64_t want); uint64_t donated = dm_ram_donor_prepare(7ull << 30);
     { char mb[32]; snprintf(mb, sizeof mb, "%llu", (unsigned long long)(donated >> 20)); setenv("DM_RAM_DONOR_MB", mb, 1); }   // hle_svc.c: the guest memory layout without a helper (DM_SWAP_HEAP_NOHELPER)
     int rc = dm_main(g_argc, g_argv);
