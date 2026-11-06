@@ -328,7 +328,9 @@ static Result cv_dec_submit(uint64_t *out, void *t, const void *data, uint64_t s
         if (!dec_ok) { static int n; if (n++ < 4) LOG("[RED] nn::codec %s: %s (%s)", k_cv_name[d->codec], vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : ""); }
         vpx_codec_iter_t it = NULL; const vpx_image_t *im;
         while ((im = vpx_codec_get_frame(&d->vpx, &it))) { vpx_image_t *c = img_copy(im); if (c) got += cv_hold(d, c, ts); }
-        if (got) { void dm_fps_movie_tick(void); dm_fps_movie_tick(); }   // a movie plays: no present interval lock (loader.c)
+        // A full-screen movie plays: no present interval lock (loader.c). Only a big one (Mario Kart World's pre-race movie is 2560x1440): the 640x360 clips the game loops in menus
+        // and races kept the 30 fps lock off for a minute at a time, and the game switched between 30 and 60 as with "Game decides"
+        if (got && d->w >= 1280) { void dm_fps_movie_tick(void); dm_fps_movie_tick(); }
     }
     if (eos) { if (got) d->held_eos[d->nheld - 1] = 1; else d->eos_pending = 1; }
     *out = ++d->submits;
