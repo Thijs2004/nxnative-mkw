@@ -92,10 +92,40 @@ private struct DocumentPicker: UIViewControllerRepresentable {
     }
 }
 
+// Check iPhone: the Graphics preset for this phone, from its model (memory size and GPU decide: an 8 GB phone pages the game's memory, so it keeps Medium or below).
+// Tested: iPhone 16 Pro Max (Medium holds 30 fps). The rest follows the chips' GPU cores, memory and cooling; a model this list does not know is judged by its memory
+struct DeviceAdvice { let name, preset, why: String }
+func deviceAdvice() -> DeviceAdvice {
+    var u = utsname(); uname(&u)
+    let id = withUnsafeBytes(of: &u.machine) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+    let gb = Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824).rounded())
+    let known: [String: (String, String, String)] = [
+        "iPhone16,1": ("iPhone 15 Pro", "low", "A17 Pro, 8 GB, small body that heats up fast"),
+        "iPhone16,2": ("iPhone 15 Pro Max", "low", "A17 Pro, 8 GB"),
+        "iPhone17,3": ("iPhone 16", "low", "A18 with a 5-core GPU, 8 GB"),
+        "iPhone17,4": ("iPhone 16 Plus", "low", "A18 with a 5-core GPU, 8 GB"),
+        "iPhone17,5": ("iPhone 16e", "low", "A18 with a 4-core GPU, 8 GB"),
+        "iPhone17,1": ("iPhone 16 Pro", "medium", "A18 Pro, 8 GB"),
+        "iPhone17,2": ("iPhone 16 Pro Max", "medium", "A18 Pro, 8 GB (tested: 30 fps)"),
+        "iPhone18,3": ("iPhone 17", "medium", "A19, 8 GB"),
+        "iPhone18,5": ("iPhone 17e", "low", "A19 with fewer GPU cores, 8 GB"),
+        "iPhone18,4": ("iPhone Air", "high", "A19 Pro, 12 GB, thin body"),
+        "iPhone18,1": ("iPhone 17 Pro", "high", "A19 Pro, 12 GB, vapor chamber"),
+        "iPhone18,2": ("iPhone 17 Pro Max", "high", "A19 Pro, 12 GB, vapor chamber"),
+    ]
+    if let k = known[id] { return DeviceAdvice(name: k.0, preset: k.1, why: k.2) }
+    let major = Int(id.dropFirst("iPhone".count).split(separator: ",").first ?? "") ?? 0
+    if gb >= 11 && major >= 19 { return DeviceAdvice(name: "iPhone 18 or newer (\(id))", preset: "full", why: "A20 or newer, \(gb) GB") }
+    if gb >= 11 { return DeviceAdvice(name: id, preset: "high", why: "\(gb) GB") }
+    if gb >= 8 { return DeviceAdvice(name: id, preset: "medium", why: "\(gb) GB") }
+    return DeviceAdvice(name: id, preset: "low", why: "\(gb) GB: the game may not fit")
+}
+
 private struct LauncherView: View {
     @ObservedObject var m: LauncherModel
     let play: () -> Void
     @State private var memory = os_proc_available_memory()
+    @State private var advice = ""
 
     var body: some View {
         GeometryReader { geometry in
@@ -111,6 +141,10 @@ private struct LauncherView: View {
                     Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
                         .font(.callout).foregroundStyle(.secondary)
                     playButton
+                    if m.settings.contains(where: { $0.env == "DM_PRESET" }) {
+                        Button("Check iPhone") { checkPhone() }.controlSize(.large)
+                        if !advice.isEmpty { Text(advice).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center) }
+                    }
                 }
                 .padding(16)
                 .frame(width: geometry.size.width / 3, height: geometry.size.height)
@@ -150,6 +184,17 @@ private struct LauncherView: View {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    private func checkPhone() {
+        let a = deviceAdvice()
+        let label = m.settings.first(where: { $0.env == "DM_PRESET" })?.options?.first(where: { $0[0] == a.preset })?[1] ?? a.preset
+        var text = "\(a.name) (\(a.why)): \(label)"
+        if m.fixed.contains("DM_PRESET") { text += " — the preset is fixed by env.txt, not changed" }
+        else { m.values["DM_PRESET"] = a.preset; m.presetPicked = true; m.applyPreset(a.preset) }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { text += ". Low Power Mode is on: expect lower fps" }
+        advice = text
+        fputs("launcher: Check iPhone: \(text)\n", stderr)
     }
 
     @ViewBuilder var playButton: some View {
