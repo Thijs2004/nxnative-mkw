@@ -4,7 +4,7 @@ nxnative-mkw runs Mario Kart World version 1.8.0 (update v917504) on an iPhone o
 
 **This repository has no game files, keys or ready-made apps.** You need your own dump of the game and its update. The app and the `RomFS.img` file you make here contain your game, so keep them to yourself.
 
-**What to expect:** on an iPhone 16 Pro Max (8 GB) a race holds a steady 30 fps with the **Medium** preset. The phone gets warm, and runs are smoother right after a restart of the phone. Online play, local wireless and GameChat are not available. Details are in the [game's note](dm/games/0400C3F00006E000/README.md#status).
+**What to expect:** on an iPhone 16 Pro Max (8 GB) a race holds a steady 30 fps with the **Medium** preset. The phone gets warm, and the game frees other apps' memory itself before it loads. Online play, local wireless and GameChat are not available. Details are in the [game's note](dm/games/0400C3F00006E000/README.md#status).
 
 ## What you need
 
@@ -194,8 +194,8 @@ The game files go in the app's own **Documents** folder.
 
 ## Step 7: Play
 
-1. **Restart the iPhone** and close other apps before playing. The game uses almost all of an 8 GB phone's memory, and a fresh phone has the most free.
-2. Start the game. A settings screen comes first. Pick a **Graphics preset**:
+1. The game uses almost all of an 8 GB phone's memory. When you tap Play it first frees the memory other apps still hold (about 2 seconds), so a start right after using other apps is as smooth as a fresh one (`DM_MEM_PURGE_MB=0` in env.txt turns this off).
+2. Start the game. A settings screen comes first. Tap **Check** next to **Check iPhone**: it looks up your iPhone's model and picks the best preset for it (15 Pro / 15 Pro Max / 16 / 16 Plus / 16e / 17e: Low; 16 Pro / 16 Pro Max / 17: Medium; Air / 17 Pro / 17 Pro Max: High; 18 Pro and newer with 12 GB: Full; only the 16 Pro Max is tested). Or pick a **Graphics preset** yourself:
 
    | Preset | Textures | Render scale | Frame rate |
    |---|---|---|---|
