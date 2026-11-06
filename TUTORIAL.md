@@ -64,6 +64,8 @@ xxd -s 0x40 -l 16 -p "$HOME/Games/Mario Kart World/updates/917504/exefs/main"
 
 Change the path if you put the folder somewhere else. To check the other modules, replace `main` at the end of the path with `subsdk0`, `subsdk1` and `sdk`.
 
+**App icon (optional):** a dump carries no icon, so the app's home-screen icon is blank unless you give it one. Put a square picture named `icon.jpg` or `icon.png` in the game folder, next to `base` and `updates` (for example the icon from your own game dump's control data), or add `--icon <path to the picture>` to the build command in Step 4.
+
 ## Step 3: Set up the Mac
 
 You only do this once.
