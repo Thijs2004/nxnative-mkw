@@ -141,10 +141,6 @@ private struct LauncherView: View {
                     Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")")
                         .font(.callout).foregroundStyle(.secondary)
                     playButton
-                    if m.settings.contains(where: { $0.env == "DM_PRESET" }) {
-                        Button("Check iPhone") { checkPhone() }.controlSize(.large)
-                        if !advice.isEmpty { Text(advice).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center) }
-                    }
                 }
                 .padding(16)
                 .frame(width: geometry.size.width / 3, height: geometry.size.height)
@@ -153,7 +149,10 @@ private struct LauncherView: View {
                         let rows = m.rows(in: section)
                         if !rows.isEmpty {
                             Section(section) {
-                                ForEach(rows) { SettingRow(s: $0, m: m) }
+                                ForEach(rows) { r in
+                                    if r.env == "DM_PRESET" { checkPhoneRow }   // above the preset it chooses
+                                    SettingRow(s: r, m: m)
+                                }
                             }
                         }
                     }
@@ -183,6 +182,19 @@ private struct LauncherView: View {
                 memory = os_proc_available_memory()
                 try? await Task.sleep(for: .seconds(2))
             }
+        }
+    }
+
+    // A row like the settings: label, what it does, and after a tap the phone it found and the preset it chose
+    private var checkPhoneRow: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Check iPhone")
+                Text(advice.isEmpty ? "Looks up this iPhone's model (chip, memory, cooling) and sets the Graphics preset below to the best one for it. You can still change any setting afterwards." : advice)
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Check") { checkPhone() }.buttonStyle(.bordered).disabled(m.fixed.contains("DM_PRESET"))
         }
     }
 
