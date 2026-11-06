@@ -6,3 +6,12 @@ DM_LINK_30=0
 # without the RAM helper (free Apple account, LiveContainer): the ranges above plus the heap chunks a Mario Bros. Circuit race left cold (DM_SWAP_MAP, 2026-11-05),
 # merged; the hot chunks outside the GPU memory pools stay in normal memory (hle_svc.c picks this when DM_RAM_DONOR_MB is 0)
 DM_SWAP_HEAP_NOHELPER=0x0+0x4000000,0x18000000+0x8000000,0x28000000+0x4000000,0x38000000+0x19cfa000,0x58000000+0x975f9000,0x104000000+0x4000000,0x110000000+0xc000000,0x128000000+0x8000000,0x134000000+0x4000000,0x13ddfe000+0xe900000,0x164000000+0xc000000,0x178000000+0x4000000,0x187a70000+0x100590000
+# phone tuning from the 16 Pro Max (2026-11-05/06, the developer's phone env.txt, also the smoother free-account test run):
+# sparse tile give-back off: it saved only ~70 MB and pages handed back were read in again from flash in races (page-in stutter, pop-in)
+DM_NVN_TILE_GIVEBACK=0
+# uploaded texture storage marked cold after 300 frames (10 s at 30 fps) instead of 600: memory relief earlier in a race
+DM_NVN_TEX_DROP_WAIT=300
+# 16 x 64 MB sparse tile heaps (a Moo Moo Meadows race used 7-12)
+DM_NVN_SPARSE_HEAPS=16
+# mesh effect layer off on the phone
+DM_NVN_MESH=0
