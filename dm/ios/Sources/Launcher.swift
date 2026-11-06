@@ -174,9 +174,12 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()
     let model = LauncherModel(file.settings)
     var host: UIViewController?
+    let shownAt = Date(), memShown = os_proc_available_memory()   // the start-stutter A/B: how long the screen stayed and what memory the app had then and at Play
     let view = LauncherView(m: model) {
         guard let h = host else { return }
         host = nil
+        fputs(String(format: "launcher: Play after %.1f s on the screen; memory available %llu MB at show, %llu MB at Play; preset picked by hand: %@\n", Date().timeIntervalSince(shownAt),
+                     UInt64(memShown >> 20), UInt64(os_proc_available_memory() >> 20), model.presetPicked ? "yes" : "no"), stderr)
         model.apply()
         h.dismiss(animated: false) { done() }
     }

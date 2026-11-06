@@ -3,7 +3,7 @@
 import SwiftUI
 
 extension LauncherModel {
-    func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0; if s.env == "DM_PRESET" { if $0 != "custom" { self.applyPreset($0) } } else { self.userChanged(s.env) } }) }
+    func binding(_ s: Setting) -> Binding<String> { Binding(get: { self.values[s.env] ?? s.def }, set: { self.values[s.env] = $0; if s.env == "DM_PRESET" { self.presetPicked = true; if $0 != "custom" { self.applyPreset($0) } } else { self.userChanged(s.env) } }) }
     // Turning on Free texture memory also picks what it was tuned with: Render scale 65% and Medium textures (Mario Kart World on an 8 GB iPhone), unless an env file or the launch fixes them
     func turnedOn(_ env: String) {
         guard env == "DM_NVN_TEX_DROP" else { return }

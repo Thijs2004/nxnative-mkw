@@ -40,6 +40,7 @@ final class LauncherModel: ObservableObject {
     let fromLaunch: Set<String>   // of those, the ones the launch environment set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
     let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
     @Published var values: [String: String] = [:]
+    var presetPicked = false   // the Graphics preset row was chosen on the screen this start (log only)
 
     private let defaults: UserDefaults
 
